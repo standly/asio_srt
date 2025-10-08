@@ -1,0 +1,6 @@
+.idea
+.venv
+build
+cmake-build-debug
+depends/build
+depends/resolved
