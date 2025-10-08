@@ -4,3 +4,4 @@ build
 cmake-build-debug
 depends/build
 depends/resolved
+depends/__pycache__
