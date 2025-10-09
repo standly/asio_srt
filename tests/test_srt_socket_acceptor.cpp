@@ -8,9 +8,19 @@
 #include <thread>
 #include <chrono>
 #include <future>
+#include <atomic>
 
 using namespace asrt;
 using namespace std::chrono_literals;
+
+// 辅助函数：解析地址字符串
+static std::pair<std::string, uint16_t> parse_address(const std::string& addr_str) {
+    auto colon_pos = addr_str.rfind(':');
+    if (colon_pos == std::string::npos) {
+        return {addr_str, 0};
+    }
+    return {addr_str.substr(0, colon_pos), static_cast<uint16_t>(std::stoi(addr_str.substr(colon_pos + 1)))};
+}
 
 class SrtSocketAcceptorTest : public ::testing::Test {
 protected:
@@ -39,19 +49,22 @@ TEST_F(SrtSocketAcceptorTest, BasicConnectAccept) {
                 acceptor.bind("127.0.0.1", 0);  // 使用随机端口
                 
                 // 获取实际绑定的端口
-                auto local_addr = acceptor.get_local_address();
+                auto local_addr = parse_address(acceptor.local_address());
                 uint16_t port = local_addr.second;
                 
                 // 创建客户端socket
                 SrtSocket client;
                 
                 // 启动异步接受
-                auto accept_future = asio::co_spawn(
+                SrtSocket server;
+                bool server_accepted = false;
+                asio::co_spawn(
                     reactor_->get_io_context(),
-                    [&]() -> asio::awaitable<SrtSocket> {
-                        co_return co_await acceptor.async_accept();
+                    [&]() -> asio::awaitable<void> {
+                        server = co_await acceptor.async_accept();
+                        server_accepted = true;
                     },
-                    asio::use_future
+                    asio::detached
                 );
                 
                 // 等待一下确保acceptor准备好
@@ -61,11 +74,14 @@ TEST_F(SrtSocketAcceptorTest, BasicConnectAccept) {
                 co_await client.async_connect("127.0.0.1", port);
                 
                 // 等待接受完成
-                SrtSocket server = co_await accept_future;
+                for (int i = 0; i < 10 && !server_accepted; ++i) {
+                    co_await asio::steady_timer(reactor_->get_io_context(), 10ms).async_wait();
+                }
+                EXPECT_TRUE(server_accepted);
                 
                 // 验证连接成功
-                EXPECT_TRUE(client.is_connected());
-                EXPECT_TRUE(server.is_connected());
+                EXPECT_TRUE(client.is_open());
+                EXPECT_TRUE(server.is_open());
                 
                 test_passed = true;
             } catch (...) {
@@ -109,7 +125,7 @@ TEST_F(SrtSocketAcceptorTest, ListenerCallback) {
                         received_streamid = streamid;
                         
                         // 可以在这里设置socket选项
-                        socket.set_option("SRTO_RCVBUF", "65536");
+                        socket.set_option("rcvbuf=65536");
                         
                         // 返回0接受连接，-1拒绝
                         return 0;
@@ -117,17 +133,22 @@ TEST_F(SrtSocketAcceptorTest, ListenerCallback) {
                 );
                 
                 acceptor.bind("127.0.0.1", 0);
-                auto port = acceptor.get_local_address().second;
+                auto port = parse_address(acceptor.local_address()).second;
                 
                 // 客户端设置stream ID
                 SrtSocket client;
-                client.set_option("SRTO_STREAMID", "test-stream-123");
+                client.set_option("streamid=test-stream-123");
                 
                 // 启动异步接受
-                auto accept_future = asio::co_spawn(
+                SrtSocket server;
+                bool server_accepted = false;
+                asio::co_spawn(
                     reactor_->get_io_context(),
-                    acceptor.async_accept(),
-                    asio::use_future
+                    [&acceptor, &server, &server_accepted]() -> asio::awaitable<void> {
+                        server = co_await acceptor.async_accept();
+                        server_accepted = true;
+                    },
+                    asio::detached
                 );
                 
                 co_await asio::steady_timer(reactor_->get_io_context(), 50ms).async_wait();
@@ -136,7 +157,10 @@ TEST_F(SrtSocketAcceptorTest, ListenerCallback) {
                 co_await client.async_connect("127.0.0.1", port);
                 
                 // 等待接受
-                SrtSocket server = co_await accept_future;
+                for (int i = 0; i < 10 && !server_accepted; ++i) {
+                    co_await asio::steady_timer(reactor_->get_io_context(), 10ms).async_wait();
+                }
+                EXPECT_TRUE(server_accepted);
                 
                 // 验证callback被调用
                 EXPECT_TRUE(callback_called);
@@ -182,7 +206,7 @@ TEST_F(SrtSocketAcceptorTest, ConnectionRejection) {
                 );
                 
                 acceptor.bind("127.0.0.1", 0);
-                auto port = acceptor.get_local_address().second;
+                auto port = parse_address(acceptor.local_address()).second;
                 
                 SrtSocket client;
                 
@@ -195,7 +219,7 @@ TEST_F(SrtSocketAcceptorTest, ConnectionRejection) {
                 }
                 
                 EXPECT_TRUE(connect_failed) << "连接应该被拒绝";
-                EXPECT_FALSE(client.is_connected());
+                EXPECT_FALSE(client.is_open());
                 
                 test_passed = true;
             } catch (...) {
@@ -230,21 +254,16 @@ TEST_F(SrtSocketAcceptorTest, SocketOptions) {
                 SrtSocket socket;
                 
                 // 设置各种选项
-                socket.set_option("SRTO_SNDBUF", "1048576");  // 1MB
-                socket.set_option("SRTO_RCVBUF", "2097152");  // 2MB
-                socket.set_option("SRTO_FC", "256");
-                socket.set_option("SRTO_MSS", "1000");
+                socket.set_option("sndbuf=1048576");  // 1MB
+                socket.set_option("rcvbuf=2097152");  // 2MB
+                socket.set_option("fc=256");
+                socket.set_option("mss=1000");
                 
-                // 获取并验证选项
-                auto sndbuf = socket.get_option("SRTO_SNDBUF");
-                auto rcvbuf = socket.get_option("SRTO_RCVBUF");
-                auto fc = socket.get_option("SRTO_FC");
-                auto mss = socket.get_option("SRTO_MSS");
+                // 注意：当前API不支持get_option，无法验证选项值
+                // TODO: 如果将来添加了get_option方法，可以验证选项值
                 
-                EXPECT_EQ(sndbuf, "1048576");
-                EXPECT_EQ(rcvbuf, "2097152");
-                EXPECT_EQ(fc, "256");
-                EXPECT_EQ(mss, "1000");
+                // 目前只能验证set_option没有抛出异常
+                // 选项设置成功（没有异常）
                 
                 test_passed = true;
             } catch (...) {
@@ -279,33 +298,42 @@ TEST_F(SrtSocketAcceptorTest, DataTransfer) {
                 // 设置连接
                 SrtAcceptor acceptor;
                 acceptor.bind("127.0.0.1", 0);
-                auto port = acceptor.get_local_address().second;
+                auto port = parse_address(acceptor.local_address()).second;
                 
                 SrtSocket client;
                 
-                auto accept_future = asio::co_spawn(
+                SrtSocket server;
+                bool server_accepted = false;
+                asio::co_spawn(
                     reactor_->get_io_context(),
-                    acceptor.async_accept(),
-                    asio::use_future
+                    [&acceptor, &server, &server_accepted]() -> asio::awaitable<void> {
+                        server = co_await acceptor.async_accept();
+                        server_accepted = true;
+                    },
+                    asio::detached
                 );
                 
                 co_await asio::steady_timer(reactor_->get_io_context(), 50ms).async_wait();
                 co_await client.async_connect("127.0.0.1", port);
-                SrtSocket server = co_await accept_future;
+                
+                for (int i = 0; i < 10 && !server_accepted; ++i) {
+                    co_await asio::steady_timer(reactor_->get_io_context(), 10ms).async_wait();
+                }
+                EXPECT_TRUE(server_accepted);
                 
                 // 测试数据传输
                 const std::string test_data = "Hello, SRT! This is a test message.";
                 
                 // 客户端发送
-                auto sent = co_await client.async_send(
-                    asio::buffer(test_data.data(), test_data.size())
+                auto sent = co_await client.async_write_packet(
+                    test_data.data(), test_data.size()
                 );
                 EXPECT_EQ(sent, test_data.size());
                 
                 // 服务器接收
                 char recv_buffer[1024];
-                auto received = co_await server.async_receive(
-                    asio::buffer(recv_buffer, sizeof(recv_buffer))
+                auto received = co_await server.async_read_packet(
+                    recv_buffer, sizeof(recv_buffer)
                 );
                 
                 EXPECT_EQ(received, test_data.size());
@@ -313,13 +341,13 @@ TEST_F(SrtSocketAcceptorTest, DataTransfer) {
                 
                 // 反向测试：服务器发送，客户端接收
                 const std::string reply = "Reply from server";
-                sent = co_await server.async_send(
-                    asio::buffer(reply.data(), reply.size())
+                sent = co_await server.async_write_packet(
+                    reply.data(), reply.size()
                 );
                 EXPECT_EQ(sent, reply.size());
                 
-                received = co_await client.async_receive(
-                    asio::buffer(recv_buffer, sizeof(recv_buffer))
+                received = co_await client.async_read_packet(
+                    recv_buffer, sizeof(recv_buffer)
                 );
                 EXPECT_EQ(received, reply.size());
                 EXPECT_EQ(std::string(recv_buffer, received), reply);
@@ -373,7 +401,7 @@ TEST_F(SrtSocketAcceptorTest, ConnectTimeout) {
                 }
                 
                 EXPECT_TRUE(timeout_occurred) << "应该发生超时";
-                EXPECT_FALSE(client.is_connected());
+                EXPECT_FALSE(client.is_open());
                 
                 test_passed = true;
             } catch (...) {
@@ -408,19 +436,20 @@ TEST_F(SrtSocketAcceptorTest, MultipleConcurrentConnections) {
             try {
                 SrtAcceptor acceptor;
                 acceptor.bind("127.0.0.1", 0);
-                auto port = acceptor.get_local_address().second;
+                auto port = parse_address(acceptor.local_address()).second;
                 
-                std::vector<SrtSocket> servers;
-                std::vector<std::future<SrtSocket>> accept_futures;
+                std::vector<SrtSocket> servers(num_clients);
+                std::atomic<int> accepted_count(0);
                 
                 // 启动多个accept操作
                 for (int i = 0; i < num_clients; ++i) {
-                    accept_futures.push_back(
-                        asio::co_spawn(
-                            reactor_->get_io_context(),
-                            acceptor.async_accept(),
-                            asio::use_future
-                        )
+                    asio::co_spawn(
+                        reactor_->get_io_context(),
+                        [&acceptor, &servers, &accepted_count, i]() -> asio::awaitable<void> {
+                            servers[i] = co_await acceptor.async_accept();
+                            accepted_count++;
+                        },
+                        asio::detached
                     );
                 }
                 
@@ -429,35 +458,32 @@ TEST_F(SrtSocketAcceptorTest, MultipleConcurrentConnections) {
                 
                 // 创建多个客户端并连接
                 std::vector<SrtSocket> clients(num_clients);
-                std::vector<std::future<void>> connect_futures;
+                std::atomic<int> connected_count(0);
                 
                 for (int i = 0; i < num_clients; ++i) {
-                    connect_futures.push_back(
-                        asio::co_spawn(
-                            reactor_->get_io_context(),
-                            [&, i]() -> asio::awaitable<void> {
-                                co_await clients[i].async_connect("127.0.0.1", port);
-                            },
-                            asio::use_future
-                        )
+                    asio::co_spawn(
+                        reactor_->get_io_context(),
+                        [&clients, &connected_count, i, port]() -> asio::awaitable<void> {
+                            co_await clients[i].async_connect("127.0.0.1", port);
+                            connected_count++;
+                        },
+                        asio::detached
                     );
                 }
                 
-                // 等待所有连接完成
-                for (auto& future : connect_futures) {
-                    co_await future;
+                // 等待所有连接和接受完成
+                for (int retry = 0; retry < 50 && (connected_count < num_clients || accepted_count < num_clients); ++retry) {
+                    co_await asio::steady_timer(reactor_->get_io_context(), 10ms).async_wait();
                 }
                 
-                // 收集所有接受的连接
-                for (auto& future : accept_futures) {
-                    servers.push_back(co_await future);
-                }
+                EXPECT_EQ(connected_count.load(), num_clients);
+                EXPECT_EQ(accepted_count.load(), num_clients);
                 
                 // 验证所有连接
                 EXPECT_EQ(servers.size(), num_clients);
                 for (int i = 0; i < num_clients; ++i) {
-                    EXPECT_TRUE(clients[i].is_connected());
-                    EXPECT_TRUE(servers[i].is_connected());
+                    EXPECT_TRUE(clients[i].is_open());
+                    EXPECT_TRUE(servers[i].is_open());
                 }
                 
                 test_passed = true;
@@ -495,7 +521,7 @@ TEST_F(SrtSocketAcceptorTest, ConnectCallback) {
                 // 设置服务器
                 SrtAcceptor acceptor;
                 acceptor.bind("127.0.0.1", 0);
-                auto port = acceptor.get_local_address().second;
+                auto port = parse_address(acceptor.local_address()).second;
                 
                 SrtSocket client;
                 
@@ -514,10 +540,15 @@ TEST_F(SrtSocketAcceptorTest, ConnectCallback) {
                 );
                 
                 // 启动accept
-                auto accept_future = asio::co_spawn(
+                SrtSocket server;
+                bool server_accepted = false;
+                asio::co_spawn(
                     reactor_->get_io_context(),
-                    acceptor.async_accept(),
-                    asio::use_future
+                    [&acceptor, &server, &server_accepted]() -> asio::awaitable<void> {
+                        server = co_await acceptor.async_accept();
+                        server_accepted = true;
+                    },
+                    asio::detached
                 );
                 
                 co_await asio::steady_timer(reactor_->get_io_context(), 50ms).async_wait();
@@ -525,8 +556,11 @@ TEST_F(SrtSocketAcceptorTest, ConnectCallback) {
                 // 连接
                 co_await client.async_connect("127.0.0.1", port);
                 
-                // 获取服务器端socket
-                SrtSocket server = co_await accept_future;
+                // 等待接受完成
+                for (int i = 0; i < 10 && !server_accepted; ++i) {
+                    co_await asio::steady_timer(reactor_->get_io_context(), 10ms).async_wait();
+                }
+                EXPECT_TRUE(server_accepted);
                 
                 // 验证callback被调用
                 EXPECT_TRUE(callback_called);
@@ -534,7 +568,7 @@ TEST_F(SrtSocketAcceptorTest, ConnectCallback) {
                 
                 // 验证从callback发送的数据
                 char buffer[256];
-                auto received = co_await server.async_receive(asio::buffer(buffer));
+                auto received = co_await server.async_read_packet(buffer, sizeof(buffer));
                 EXPECT_GT(received, 0);
                 EXPECT_EQ(std::string(buffer, received), "Hello from callback");
                 
@@ -572,7 +606,7 @@ TEST_F(SrtSocketAcceptorTest, AddressOperations) {
                 SrtAcceptor acceptor;
                 acceptor.bind("127.0.0.1", 0);
                 
-                auto local_addr = acceptor.get_local_address();
+                auto local_addr = parse_address(acceptor.local_address());
                 EXPECT_EQ(local_addr.first, "127.0.0.1");
                 EXPECT_GT(local_addr.second, 0);
                 
@@ -580,19 +614,28 @@ TEST_F(SrtSocketAcceptorTest, AddressOperations) {
                 SrtSocket client;
                 auto port = local_addr.second;
                 
-                auto accept_future = asio::co_spawn(
+                SrtSocket server;
+                bool server_accepted = false;
+                asio::co_spawn(
                     reactor_->get_io_context(),
-                    acceptor.async_accept(),
-                    asio::use_future
+                    [&acceptor, &server, &server_accepted]() -> asio::awaitable<void> {
+                        server = co_await acceptor.async_accept();
+                        server_accepted = true;
+                    },
+                    asio::detached
                 );
                 
                 co_await asio::steady_timer(reactor_->get_io_context(), 50ms).async_wait();
                 co_await client.async_connect("127.0.0.1", port);
-                SrtSocket server = co_await accept_future;
+                
+                for (int i = 0; i < 10 && !server_accepted; ++i) {
+                    co_await asio::steady_timer(reactor_->get_io_context(), 10ms).async_wait();
+                }
+                EXPECT_TRUE(server_accepted);
                 
                 // 获取客户端地址
-                auto client_local = client.get_local_address();
-                auto client_peer = client.get_peer_address();
+                auto client_local = parse_address(client.local_address());
+                auto client_peer = parse_address(client.remote_address());
                 
                 EXPECT_EQ(client_local.first, "127.0.0.1");
                 EXPECT_GT(client_local.second, 0);
@@ -600,8 +643,8 @@ TEST_F(SrtSocketAcceptorTest, AddressOperations) {
                 EXPECT_EQ(client_peer.second, port);
                 
                 // 获取服务器端地址
-                auto server_local = server.get_local_address();
-                auto server_peer = server.get_peer_address();
+                auto server_local = parse_address(server.local_address());
+                auto server_peer = parse_address(server.remote_address());
                 
                 EXPECT_EQ(server_local.first, "127.0.0.1");
                 EXPECT_EQ(server_local.second, port);
@@ -641,7 +684,7 @@ TEST_F(SrtSocketAcceptorTest, ErrorHandling) {
         [&]() -> asio::awaitable<void> {
             try {
                 const char* data = "test";
-                co_await socket.async_send(asio::buffer(data, 4));
+                co_await socket.async_write_packet(data, 4);
             } catch (const std::system_error&) {
                 send_failed = true;
             }
@@ -655,7 +698,7 @@ TEST_F(SrtSocketAcceptorTest, ErrorHandling) {
     // 测试重复绑定
     SrtAcceptor acceptor1, acceptor2;
     acceptor1.bind("127.0.0.1", 0);
-    auto port = acceptor1.get_local_address().second;
+    auto port = parse_address(acceptor1.local_address()).second;
     
     bool bind_failed = false;
     try {
