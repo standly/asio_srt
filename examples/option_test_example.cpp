@@ -178,7 +178,8 @@ int main() {
         
         // 设置日志
         SrtReactor::set_log_level(LogLevel::Debug);
-        SrtReactor::set_log_callback([](LogLevel level, const char* area, const char* message) {
+        SrtReactor::set_log_callback([](LogLevel level, const char* area, const char* message,
+                                       const char* file, const char* function, int line) {
             const char* level_str = "";
             switch (level) {
                 case LogLevel::Debug:    level_str = "[DEBUG]"; break;

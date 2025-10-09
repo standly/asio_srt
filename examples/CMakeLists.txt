@@ -103,3 +103,31 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/custom_logging_example.cpp)
     )
 endif()
 
+# SRT Streaming Example
+add_executable(srt_streaming_example
+    srt_streaming_example.cpp
+)
+
+target_link_libraries(srt_streaming_example
+    PRIVATE
+    asrt
+    SRT::srt
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    Threads::Threads
+)
+
+# SRT Resilient Client Example
+add_executable(srt_resilient_client_example
+    srt_resilient_client_example.cpp
+)
+
+target_link_libraries(srt_resilient_client_example
+    PRIVATE
+    asrt
+    SRT::srt
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    Threads::Threads
+)
+

@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <chrono>
 #include <memory>
+#include <cstring>
 using namespace asrt;
 // ========================================
 // 示例 1：自定义格式输出到 stdout
@@ -15,7 +16,8 @@ void example1_custom_format() {
     std::cout << "\n=== 示例 1：自定义日志格式 ===\n" << std::endl;
     
     // 设置自定义日志回调
-    SrtReactor::set_log_callback([](asrt::LogLevel level, const char* area, const char* message) {
+    SrtReactor::set_log_callback([](asrt::LogLevel level, const char* area, const char* message,
+                                   const char* file, const char* function, int line) {
         // 自定义时间格式
         auto now = std::chrono::system_clock::now();
         auto time_t = std::chrono::system_clock::to_time_t(now);
@@ -36,7 +38,17 @@ void example1_custom_format() {
         std::cout << level_emoji << " "
                   << std::put_time(std::localtime(&time_t), "%H:%M:%S")
                   << "." << std::setfill('0') << std::setw(3) << ms.count()
-                  << " [" << area << "] " << message << std::endl;
+                  << " [" << area << "] ";
+        
+        // 如果有文件信息，添加位置
+        if (file && *file) {
+            // 只显示文件名（不要完整路径）
+            const char* filename = strrchr(file, '/');
+            filename = filename ? filename + 1 : file;
+            std::cout << "[" << filename << ":" << line << "] ";
+        }
+        
+        std::cout << message << std::endl;
     });
     
     // 使用 Reactor（会输出自定义格式的日志）
@@ -60,7 +72,8 @@ void example2_file_logging() {
     }
     
     // 设置文件输出回调
-    SrtReactor::set_log_callback([log_file](asrt::LogLevel level, const char* area, const char* message) {
+    SrtReactor::set_log_callback([log_file](asrt::LogLevel level, const char* area, const char* message,
+                                           const char* file, const char* function, int line) {
         // 添加时间戳
         auto now = std::chrono::system_clock::now();
         auto time_t = std::chrono::system_clock::to_time_t(now);
@@ -77,8 +90,14 @@ void example2_file_logging() {
         
         // 写入文件
         *log_file << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S")
-                  << " [" << level_str << "] [" << area << "] " 
-                  << message << std::endl;
+                  << " [" << level_str << "] [" << area << "] ";
+        
+        // 添加文件位置信息
+        if (file && *file) {
+            *log_file << "[" << file << ":" << function << ":" << line << "] ";
+        }
+        
+        *log_file << message << std::endl;
         log_file->flush(); // 立即刷新
     });
     
@@ -101,7 +120,8 @@ void example3_spdlog_integration() {
     // 伪代码：假设你已经有一个 spdlog logger
     // auto logger = spdlog::stdout_color_mt("reactor");
     
-    SrtReactor::set_log_callback([](asrt::LogLevel level, const char* area, const char* message) {
+    SrtReactor::set_log_callback([](asrt::LogLevel level, const char* area, const char* message,
+                                   const char* file, const char* function, int line) {
         // 映射到 spdlog 级别
         /*
         switch (level) {
@@ -135,7 +155,8 @@ void example3_spdlog_integration() {
 void example4_area_filtering() {
     std::cout << "\n=== 示例 4：只记录 Reactor 的日志，忽略 SRT 库的日志 ===\n" << std::endl;
     
-    SrtReactor::set_log_callback([](asrt::LogLevel level, const char* area, const char* message) {
+    SrtReactor::set_log_callback([](asrt::LogLevel level, const char* area, const char* message,
+                                   const char* file, const char* function, int line) {
         // 只输出 Reactor 的日志
         std::string area_str(area);
         if (area_str == "Reactor") {
@@ -156,7 +177,8 @@ void example4_area_filtering() {
 void example5_structured_logging() {
     std::cout << "\n=== 示例 5：结构化日志（JSON 格式）===\n" << std::endl;
     
-    SrtReactor::set_log_callback([](asrt::LogLevel level, const char* area, const char* message) {
+    SrtReactor::set_log_callback([](asrt::LogLevel level, const char* area, const char* message,
+                                   const char* file, const char* function, int line) {
         // 转换级别为字符串
         const char* level_str = "";
         switch (level) {
@@ -176,8 +198,16 @@ void example5_structured_logging() {
         std::cout << "{"
                   << "\"timestamp\":" << timestamp << ","
                   << "\"level\":\"" << level_str << "\","
-                  << "\"area\":\"" << area << "\","
-                  << "\"message\":\"" << message << "\""
+                  << "\"area\":\"" << area << "\",";
+        
+        // 添加位置信息
+        if (file && *file) {
+            std::cout << "\"file\":\"" << file << "\","
+                      << "\"function\":\"" << function << "\","
+                      << "\"line\":" << line << ",";
+        }
+        
+        std::cout << "\"message\":\"" << message << "\""
                   << "}" << std::endl;
     });
     

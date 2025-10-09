@@ -78,12 +78,12 @@ asio::awaitable<void> run_server(uint16_t port) {
         }
         
         // 设置监听回调（可选）
-        acceptor.set_listener_callback([](const std::error_code& ec, SrtSocket /*client*/) {
-            if (ec) {
-                std::cerr << "Listener callback error: " << ec.message() << std::endl;
-            } else {
-                std::cout << "New connection accepted in callback!" << std::endl;
-            }
+        acceptor.set_listener_callback([](SrtSocket& client, int hsversion, const std::string& streamid) -> int {
+            std::cout << "New connection accepted in callback!" << std::endl;
+            std::cout << "Peer address: " << client.remote_address() << std::endl;
+            std::cout << "Handshake version: " << hsversion << std::endl;
+            std::cout << "Stream ID: " << (streamid.empty() ? "(none)" : streamid) << std::endl;
+            return 0;  // 接受连接
         });
         
         // 绑定并监听
@@ -134,7 +134,8 @@ int main(int argc, char* argv[]) {
         SrtReactor::set_log_level(LogLevel::Debug);
         
         // 可选：设置自定义日志回调
-        SrtReactor::set_log_callback([](LogLevel level, const char* area, const char* message) {
+        SrtReactor::set_log_callback([](LogLevel level, const char* area, const char* message,
+                                       const char* file, const char* function, int line) {
             const char* level_str = "";
             switch (level) {
                 case LogLevel::Debug:    level_str = "[DEBUG]"; break;

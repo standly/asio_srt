@@ -21,7 +21,9 @@ enum class LogLevel {
 
 // 用户自定义日志回调
 // 参数：level - 日志级别, area - 区域（Reactor/SRT等）, message - 日志内容
-using LogCallback = std::function<void(LogLevel level, const char* area, const char* message)>;
+//       file - 源文件名, function - 函数名, line - 行号
+using LogCallback = std::function<void(LogLevel level, const char* area, const char* message,
+                                      const char* file, const char* function, int line)>;
 
 // 统一的日志系统
 // - 自动将 Reactor 和 SRT 库的日志统一处理
@@ -67,14 +69,15 @@ public:
     }
     
     // 记录日志（从 Reactor 代码调用）
-    static void log(LogLevel level, const char* area, const std::string& message) {
-        // 直接调用处理器
-        log_handler(nullptr, static_cast<int>(level), "", 0, area, message.c_str());
+    static void log(LogLevel level, const char* area, const std::string& message,
+                   const char* file = "", const char* function = "", int line = 0) {
+        // 直接调用处理器（注意：SRT的log_handler不支持function参数）
+        log_handler(nullptr, static_cast<int>(level), file, line, area, message.c_str());
     }
 
 private:
     // SRT 日志处理器（同时处理 Reactor 和 SRT 库的所有日志）
-    static void log_handler(void* /*opaque*/, int level, const char* /*file*/, int /*line*/, 
+    static void log_handler(void* /*opaque*/, int level, const char* file, int line, 
                            const char* area, const char* message) {
         std::lock_guard<std::mutex> lock(get_mutex());
         
@@ -90,7 +93,7 @@ private:
         auto& callback = get_callback_ref();
         if (callback) {
             // 用户自定义回调
-            callback(log_level, area, message);
+            callback(log_level, area, message, file, "", line);
         } else {
             // 默认输出到 stderr
             const char* level_str = "";
@@ -103,8 +106,19 @@ private:
                 default:          level_str = "?????"; break;
             }
             
-            // 输出格式：[级别] [区域] 消息
-            std::cerr << "[" << level_str << "] [" << area << "] " << message << std::endl;
+            // 输出格式：[级别] [区域] [文件:函数:行号] 消息
+            std::cerr << "[" << level_str << "] [" << area << "] ";
+            
+            // 如果有文件信息，添加调用位置
+            if (file && *file) {
+                std::cerr << "[" << file;
+                if (line > 0) {
+                    std::cerr << ":" << line;
+                }
+                std::cerr << "] ";
+            }
+            
+            std::cerr << message << std::endl;
         }
     }
     
@@ -127,15 +141,15 @@ private:
 
 } // namespace asrt
 
-// 便捷的日志宏
+// 便捷的日志宏（自动添加文件名、函数名、行号）
 #define ASRT_LOG_DEBUG(msg) \
-    asrt::SrtLog::log(asrt::LogLevel::Debug, "Reactor", msg)
+    asrt::SrtLog::log(asrt::LogLevel::Debug, "Reactor", msg, __FILE__, __FUNCTION__, __LINE__)
 
 #define ASRT_LOG_INFO(msg) \
-    asrt::SrtLog::log(asrt::LogLevel::Notice, "Reactor", msg)
+    asrt::SrtLog::log(asrt::LogLevel::Notice, "Reactor", msg, __FILE__, __FUNCTION__, __LINE__)
 
 #define ASRT_LOG_WARNING(msg) \
-    asrt::SrtLog::log(asrt::LogLevel::Warning, "Reactor", msg)
+    asrt::SrtLog::log(asrt::LogLevel::Warning, "Reactor", msg, __FILE__, __FUNCTION__, __LINE__)
 
 #define ASRT_LOG_ERROR(msg) \
-    asrt::SrtLog::log(asrt::LogLevel::Error, "Reactor", msg)
+    asrt::SrtLog::log(asrt::LogLevel::Error, "Reactor", msg, __FILE__, __FUNCTION__, __LINE__)

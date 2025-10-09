@@ -175,16 +175,13 @@ asio::awaitable<void> run_server(uint16_t port) {
         // });
         
         // 设置监听回调
-        acceptor.set_listener_callback([](const std::error_code& ec, SrtSocket client) {
-            if (ec) {
-                std::cerr << "Listener callback error: " << ec.message() << std::endl;
-                return;
-            }
-            
+        acceptor.set_listener_callback([](SrtSocket& client, int hsversion, const std::string& streamid) -> int {
             SRTSOCKET sock_id = client.native_handle();
             std::string peer_addr = client.remote_address();
             
             std::cout << "\n>>> New connection request from " << peer_addr << std::endl;
+            std::cout << "Handshake version: " << hsversion << std::endl;
+            std::cout << "Stream ID: " << (streamid.empty() ? "(none)" : streamid) << std::endl;
             
             // 创建会话记录
             ClientSession session;
@@ -202,6 +199,8 @@ asio::awaitable<void> run_server(uint16_t port) {
                 client.set_option("maxbw=5000000");  // 5 Mbps
                 std::cout << "External client, bandwidth limited to 5 Mbps" << std::endl;
             }
+            
+            return 0;  // 接受连接
         });
         
         // 绑定并监听
@@ -273,7 +272,8 @@ int main(int argc, char* argv[]) {
         SrtReactor::set_log_level(LogLevel::Notice);
         
         // 设置自定义日志回调
-        SrtReactor::set_log_callback([](LogLevel level, const char* area, const char* message) {
+        SrtReactor::set_log_callback([](LogLevel level, const char* area, const char* message,
+                                       const char* file, const char* function, int line) {
             const char* level_str = "";
             switch (level) {
                 case LogLevel::Debug:    level_str = "[DEBUG]"; break;

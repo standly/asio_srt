@@ -20,7 +20,8 @@ int main() {
     
     std::vector<LogEntry> logs;
     
-    SrtReactor::set_log_callback([&logs](asrt::LogLevel level, const char* area, const char* msg) {
+    SrtReactor::set_log_callback([&logs](asrt::LogLevel level, const char* area, const char* msg,
+                                        const char* file, const char* function, int line) {
         logs.push_back({level, area, msg});
         std::cout << "📝 [" << area << "] " << msg << std::endl;
     });

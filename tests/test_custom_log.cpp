@@ -4,12 +4,16 @@
 #include <iostream>
 #include <vector>
 #include <string>
+#include <cstring>
 
 using namespace asrt;
 struct LogEntry {
     asrt::LogLevel level;
     std::string area;
     std::string message;
+    std::string file;
+    std::string function;
+    int line;
 };
 
 int main() {
@@ -19,8 +23,9 @@ int main() {
     std::vector<LogEntry> captured_logs;
     
     // 设置自定义日志回调
-    SrtReactor::set_log_callback([&captured_logs](asrt::LogLevel level, const char* area, const char* message) {
-        captured_logs.push_back({level, area, message});
+    SrtReactor::set_log_callback([&captured_logs](asrt::LogLevel level, const char* area, const char* message,
+                                                  const char* file, const char* function, int line) {
+        captured_logs.push_back({level, area, message, file, function, line});
         
         // 同时输出到控制台（带自定义格式）
         const char* level_str = "";
@@ -32,7 +37,20 @@ int main() {
             case asrt::LogLevel::Critical: level_str = "💀 FATAL"; break;
         }
         
-        std::cout << level_str << " [" << area << "] " << message << std::endl;
+        std::cout << level_str << " [" << area << "] ";
+        
+        // 如果有文件信息，显示调用位置
+        if (file && *file) {
+            // 只显示文件名（不要完整路径）
+            const char* filename = file;
+            const char* last_slash = strrchr(file, '/');
+            if (last_slash) {
+                filename = last_slash + 1;
+            }
+            std::cout << "[" << filename << ":" << function << ":" << line << "] ";
+        }
+        
+        std::cout << message << std::endl;
     });
     
     std::cout << "✅ 已设置自定义日志回调\n" << std::endl;

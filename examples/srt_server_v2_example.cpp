@@ -215,7 +215,8 @@ int main(int argc, char* argv[]) {
         SrtReactor::set_log_level(LogLevel::Debug);
         
         // 自定义日志格式
-        SrtReactor::set_log_callback([](LogLevel level, const char* area, const char* message) {
+        SrtReactor::set_log_callback([](LogLevel level, const char* area, const char* message,
+                                       const char* file, const char* function, int line) {
             const char* level_str = "";
             const char* color_start = "";
             const char* color_end = "\033[0m";

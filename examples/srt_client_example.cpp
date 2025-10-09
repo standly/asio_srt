@@ -127,7 +127,8 @@ int main(int argc, char* argv[]) {
         SrtReactor::set_log_level(LogLevel::Debug);
         
         // 可选：设置自定义日志回调
-        SrtReactor::set_log_callback([](LogLevel level, const char* area, const char* message) {
+        SrtReactor::set_log_callback([](LogLevel level, const char* area, const char* message,
+                                       const char* file, const char* function, int line) {
             const char* level_str = "";
             switch (level) {
                 case LogLevel::Debug:    level_str = "[DEBUG]"; break;
