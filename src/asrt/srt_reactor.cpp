@@ -1,14 +1,15 @@
 // srt_reactor.cpp
 
-#include "srt_reactor.h"
-#include "srt_error.h"
-#include "srt_log.h"
+#include "srt_reactor.hpp"
+#include "srt_error.hpp"
+#include "srt_log.hpp"
 #include <vector>
 #include <iostream>
 #include <future>
 #include <atomic>
 #include <sstream>
 
+namespace asrt {
 // Constructor, Destructor, and get_instance remain largely the same.
 // ... (omitting them for brevity, they are unchanged from your original code)
 SrtReactor& SrtReactor::get_instance() {
@@ -478,4 +479,5 @@ void SrtReactor::cleanup_op(SRTSOCKET srt_sock, int event_type, const std::error
             h(ec, 0);
         });
     }
+}
 }

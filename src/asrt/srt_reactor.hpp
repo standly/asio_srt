@@ -16,8 +16,8 @@
 #include <thread>
 #include <unordered_map>
 
-#include "srt_log.h"
-
+#include "srt_log.hpp"
+namespace asrt {
 class SrtReactor {
 private:
     // Forward declaration
@@ -133,3 +133,4 @@ private:
     // The map now holds EventOperations
     std::unordered_map<SRTSOCKET, std::unique_ptr<EventOperation>> pending_ops_;
 };
+}

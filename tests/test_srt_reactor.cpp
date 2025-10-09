@@ -1,6 +1,6 @@
 // test_srt_reactor.cpp
 #include <gtest/gtest.h>
-#include "asrt/srt_reactor.h"
+#include "asrt/srt_reactor.hpp"
 #include <asio/co_spawn.hpp>
 #include <asio/detached.hpp>
 #include <asio/steady_timer.hpp>
