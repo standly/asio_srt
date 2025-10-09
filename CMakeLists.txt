@@ -23,6 +23,7 @@ include(depends/scripts/depends.cmake)
 # Add subdirectories
 add_subdirectory(src)
 add_subdirectory(tests)
+add_subdirectory(examples)
 
 # Enable testing
 enable_testing()
