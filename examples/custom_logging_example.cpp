@@ -1,12 +1,12 @@
 // custom_logging_example.cpp - 自定义日志输出示例
 
-#include "asrt/srt_reactor.h"
+#include "asrt/srt_reactor.hpp"
 #include <iostream>
 #include <fstream>
 #include <iomanip>
 #include <chrono>
 #include <memory>
-
+using namespace asrt;
 // ========================================
 // 示例 1：自定义格式输出到 stdout
 // ========================================

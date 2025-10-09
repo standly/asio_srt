@@ -1,10 +1,11 @@
 // test_custom_log.cpp - 测试自定义日志功能
 
-#include "asrt/srt_reactor.h"
+#include "asrt/srt_reactor.hpp"
 #include <iostream>
 #include <vector>
 #include <string>
 
+using namespace asrt;
 struct LogEntry {
     asrt::LogLevel level;
     std::string area;

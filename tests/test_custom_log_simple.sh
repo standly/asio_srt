@@ -4,9 +4,10 @@
 cd "$(dirname "$0")/.."
 
 cat > /tmp/test_log.cpp << 'EOF'
-#include "src/asrt/srt_reactor.h"
+#include "src/asrt/srt_reactor.hpp"
 #include <iostream>
 #include <vector>
+using namespace asrt;
 
 struct LogEntry {
     asrt::LogLevel level;

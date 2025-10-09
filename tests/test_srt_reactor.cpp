@@ -9,6 +9,7 @@
 
 using namespace std::chrono_literals;
 
+using namespace asrt;
 class SrtReactorTest : public ::testing::Test {
 protected:
     void SetUp() override {
