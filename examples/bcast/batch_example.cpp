@@ -235,14 +235,18 @@ awaitable<void> example4_bulk_data_processing(asio::io_context& io) {
         double sum = 0;
         int count = 0;
         
-        while (true) {
-            try { auto msgs = co_await analytics_queue->async_read_msgs(100, use_awaitable);
-            if (ec || msgs.empty()) break;
-            
-            for (const auto& dp : msgs) {
-                sum += dp.value;
-                count++;
+        try {
+            while (true) {
+                auto msgs = co_await analytics_queue->async_read_msgs(100, use_awaitable);
+                if (msgs.empty()) break;
+                
+                for (const auto& dp : msgs) {
+                    sum += dp.value;
+                    count++;
+                }
             }
+        } catch (const std::exception&) {
+            // Queue stopped
         }
         
         if (count > 0) {
@@ -256,15 +260,19 @@ awaitable<void> example4_bulk_data_processing(asio::io_context& io) {
     co_spawn(io, [anomaly_queue]() -> awaitable<void> {
         int anomalies = 0;
         
-        while (true) {
-            try { auto msgs = co_await anomaly_queue->async_read_msgs(100, use_awaitable);
-            if (ec || msgs.empty()) break;
-            
-            for (const auto& dp : msgs) {
-                if (dp.value > 100.0 || dp.value < 0.0) {
-                    anomalies++;
+        try {
+            while (true) {
+                auto msgs = co_await anomaly_queue->async_read_msgs(100, use_awaitable);
+                if (msgs.empty()) break;
+                
+                for (const auto& dp : msgs) {
+                    if (dp.value > 100.0 || dp.value < 0.0) {
+                        anomalies++;
+                    }
                 }
             }
+        } catch (const std::exception&) {
+            // Queue stopped
         }
         
         std::cout << "[Anomaly Detection] Found " << anomalies << " anomalies" << std::endl;

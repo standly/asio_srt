@@ -162,4 +162,51 @@ asio::awaitable<bool> wait_for(
         throw; // 抛出其他非预期的错误
     }
 }
-
+//
+// // ------------------------------------
+// // 3. 示例用法 (演示超时情况)
+// // ------------------------------------
+// using namespace std::literals::chrono_literals;
+//
+// asio::awaitable<void> consumer_with_timeout(int id, async_event& event) {
+//     std::cout << "[Consumer " << id << "] 启动，等待事件 (超时 1.5 秒)...\n";
+//
+//     // 调用带超时的等待函数
+//     bool triggered = co_await wait_for(event, 1500ms);
+//
+//     if (triggered) {
+//         std::cout << "[Consumer " << id << "] **事件已接收！** 恢复执行。\n";
+//     } else {
+//         std::cout << "[Consumer " << id << "] **超时了！** 事件未在 1.5 秒内触发。\n";
+//     }
+// }
+//
+// asio::awaitable<void> producer_delayed(async_event& event, asio::steady_timer& timer) {
+//     // 延迟 3 秒，确保消费者超时
+//     std::cout << "[Producer] 启动，等待 3 秒后触发事件...\n";
+//     timer.expires_after(3s);
+//     co_await timer.async_wait(asio::use_awaitable);
+//
+//     std::cout << "[Producer] **时间到，触发事件 (notify_all) !**\n";
+//     event.notify_all();
+// }
+//
+// int main() {
+//     try {
+//         asio::io_context ioc;
+//
+//         async_event event(ioc.get_executor());
+//         asio::steady_timer timer(ioc);
+//
+//         asio::co_spawn(ioc, consumer_with_timeout(1, event), asio::detached);
+//         asio::co_spawn(ioc, producer_delayed(event, timer), asio::detached);
+//
+//         std::cout << "--- 启动 Asio 事件循环 ---\n";
+//         ioc.run();
+//         std::cout << "--- Asio 事件循环结束 ---\n";
+//
+//     } catch (const std::exception& e) {
+//         std::cerr << "Exception: " << e.what() << "\n";
+//     }
+//     return 0;
+// }
