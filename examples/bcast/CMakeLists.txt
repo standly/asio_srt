@@ -40,6 +40,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND CMAKE_CXX_COMPILER_VERSION VERS
     target_link_libraries(bcast_batch_example PRIVATE bcast pthread)
     target_compile_features(bcast_batch_example PRIVATE cxx_std_20)
     
+    add_executable(bcast_semaphore_test semaphore_test.cpp)
+    target_link_libraries(bcast_semaphore_test PRIVATE bcast pthread)
+    target_compile_features(bcast_semaphore_test PRIVATE cxx_std_20)
+    
     message(STATUS "Building bcast examples with C++20 coroutine support")
 else()
     message(STATUS "Building bcast examples (C++20 coroutine examples disabled, need GCC 10+ or Clang 10+)")
