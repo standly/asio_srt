@@ -140,3 +140,6 @@ target_link_libraries(srt_resilient_client_example
     Threads::Threads
 )
 
+
+# BCAST Examples
+add_subdirectory(bcast)

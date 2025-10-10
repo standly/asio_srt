@@ -6,10 +6,14 @@
 
 #include "async_queue.hpp"
 #include <asio.hpp>
+#include <asio/co_spawn.hpp>
+#include <asio/detached.hpp>
+#include <asio/use_awaitable.hpp>
 #include <memory>
 #include <unordered_map>
 #include <vector>
 #include <atomic>
+#include <functional>
 
 namespace bcast {
 
@@ -71,6 +75,51 @@ public:
         });
         
         return queue;
+    }
+
+    /**
+     * @brief Subscribe with a callback function (for backward compatibility)
+     * @param handler Callback function to process messages
+     * @return Subscriber ID that can be used with unsubscribe_by_id()
+     * 
+     * Thread-safe: can be called from any thread.
+     * 
+     * This method internally uses a recursive async read pattern to process messages.
+     */
+    uint64_t subscribe(std::function<void(const T&)> handler) {
+        auto queue = std::make_shared<async_queue<T>>(io_context_);
+        uint64_t id = next_id_.fetch_add(1, std::memory_order_relaxed);
+        
+        asio::post(strand_, [self = this->shared_from_this(), id, queue]() {
+            self->subscribers_[id] = queue;
+            self->queue_to_id_[queue.get()] = id;
+        });
+        
+        // Start reading messages recursively
+        start_reading(queue, std::move(handler));
+        
+        return id;
+    }
+
+    /**
+     * @brief Unsubscribe by subscriber ID
+     * @param id The subscriber ID returned from subscribe(handler)
+     * 
+     * Thread-safe: can be called from any thread
+     */
+    void unsubscribe_by_id(uint64_t id) {
+        asio::post(strand_, [self = this->shared_from_this(), id]() {
+            auto it = self->subscribers_.find(id);
+            if (it != self->subscribers_.end()) {
+                it->second->stop();
+                
+                // Also remove from queue_to_id_ map
+                auto queue_ptr = it->second.get();
+                self->queue_to_id_.erase(queue_ptr);
+                
+                self->subscribers_.erase(it);
+            }
+        });
     }
 
     /**
@@ -233,6 +282,26 @@ public:
     }
 
 private:
+    /**
+     * @brief Helper method to recursively read messages from queue
+     */
+    void start_reading(queue_ptr queue, std::function<void(const T&)> handler) {
+        queue->async_read_msg(
+            [self = this->shared_from_this(), queue, handler](std::error_code ec, T msg) {
+                if (ec) {
+                    // Queue stopped, end the reading loop
+                    return;
+                }
+                
+                // Call user handler
+                handler(msg);
+                
+                // Continue reading
+                self->start_reading(queue, handler);
+            }
+        );
+    }
+
     asio::strand<asio::io_context::executor_type> strand_;
     asio::io_context& io_context_;
     std::unordered_map<uint64_t, queue_ptr> subscribers_;

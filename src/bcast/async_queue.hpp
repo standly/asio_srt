@@ -57,9 +57,7 @@ public:
                 self->queue_.pop_front();
                 
                 auto handler = std::move(self->pending_handler_);
-                self->pending_handler_ = nullptr;
-                
-                handler(std::error_code{}, std::move(message));
+                handler->invoke(std::error_code{}, std::move(message));
             }
         });
     }
@@ -96,9 +94,7 @@ public:
                 self->queue_.pop_front();
                 
                 auto handler = std::move(self->pending_handler_);
-                self->pending_handler_ = nullptr;
-                
-                handler(std::error_code{}, std::move(message));
+                handler->invoke(std::error_code{}, std::move(message));
             }
         });
     }
@@ -156,8 +152,8 @@ public:
      * 
      * Usage: auto msg = co_await queue->async_read_msg();
      */
-    template<typename CompletionToken = asio::default_completion_token_t<typename asio::strand<asio::io_context::executor_type>::executor_type>>
-    auto async_read_msg(CompletionToken&& token = asio::default_completion_token_t<typename asio::strand<asio::io_context::executor_type>::executor_type>{}) {
+    template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>>
+    auto async_read_msg(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>{}) {
         return asio::async_initiate<CompletionToken, void(std::error_code, T)>(
             [self = this->shared_from_this()](auto handler) mutable {
                 asio::post(self->strand_, [self, handler = std::move(handler)]() mutable {
@@ -165,7 +161,7 @@ public:
                         asio::post(asio::bind_executor(
                             self->strand_,
                             [handler = std::move(handler)]() mutable {
-                                handler(asio::error::operation_aborted, T{});
+                                handler(std::make_error_code(std::errc::operation_canceled), T{});
                             }
                         ));
                         return;
@@ -184,7 +180,7 @@ public:
                         ));
                     } else {
                         // Queue empty, save handler for later
-                        self->pending_handler_ = std::move(handler);
+                        self->pending_handler_ = std::make_unique<handler_impl<decltype(handler)>>(std::move(handler));
                     }
                 });
             },
@@ -199,8 +195,8 @@ public:
      * 
      * Usage: auto msgs = co_await queue->async_read_msgs(10);
      */
-    template<typename CompletionToken = asio::default_completion_token_t<typename asio::strand<asio::io_context::executor_type>::executor_type>>
-    auto async_read_msgs(size_t max_count, CompletionToken&& token = asio::default_completion_token_t<typename asio::strand<asio::io_context::executor_type>::executor_type>{}) {
+    template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>>
+    auto async_read_msgs(size_t max_count, CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>{}) {
         return asio::async_initiate<CompletionToken, void(std::error_code, std::vector<T>)>(
             [self = this->shared_from_this(), max_count](auto handler) mutable {
                 asio::post(self->strand_, [self, max_count, handler = std::move(handler)]() mutable {
@@ -208,7 +204,7 @@ public:
                         asio::post(asio::bind_executor(
                             self->strand_,
                             [handler = std::move(handler)]() mutable {
-                                handler(asio::error::operation_aborted, std::vector<T>{});
+                                handler(std::make_error_code(std::errc::operation_canceled), std::vector<T>{});
                             }
                         ));
                         return;
@@ -243,30 +239,37 @@ public:
      * Usage: auto [ec, msg] = co_await queue->async_read_msg_with_timeout(5s, use_awaitable);
      * Returns asio::error::timed_out if timeout occurs.
      */
-    template<typename Duration, typename CompletionToken = asio::default_completion_token_t<typename asio::strand<asio::io_context::executor_type>::executor_type>>
-    auto async_read_msg_with_timeout(Duration timeout, CompletionToken&& token = asio::default_completion_token_t<typename asio::strand<asio::io_context::executor_type>::executor_type>{}) {
+    template<typename Duration, typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>>
+    auto async_read_msg_with_timeout(Duration timeout, CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>{}) {
         return asio::async_initiate<CompletionToken, void(std::error_code, T)>(
             [self = this->shared_from_this(), timeout](auto handler) mutable {
                 auto timer = std::make_shared<asio::steady_timer>(self->io_context_);
-                timer->expires_after(timeout);
+                auto handler_ptr = std::make_shared<decltype(handler)>(std::move(handler));
+                auto completed = std::make_shared<std::atomic<bool>>(false);
                 
-                // Timeout handler
-                timer->async_wait([self, handler, timer](std::error_code ec) mutable {
+                // Helper: complete operation once
+                auto complete_once = [handler_ptr, completed](std::error_code ec, T msg) {
+                    if (!completed->exchange(true)) {
+                        (*handler_ptr)(ec, std::move(msg));
+                    }
+                };
+                
+                // Set up timeout
+                timer->expires_after(timeout);
+                timer->async_wait([self, complete_once, timer](std::error_code ec) mutable {
                     if (ec == asio::error::operation_aborted) return;
                     
-                    asio::post(self->strand_, [self, handler = std::move(handler)]() mutable {
-                        if (self->pending_handler_) {
-                            self->pending_handler_ = nullptr;
-                            handler(asio::error::timed_out, T{});
-                        }
+                    asio::post(self->strand_, [self, complete_once]() mutable {
+                        self->pending_handler_.reset();
+                        complete_once(asio::error::timed_out, T{});
                     });
                 });
                 
                 // Try to read message immediately
-                asio::post(self->strand_, [self, handler = std::move(handler), timer]() mutable {
+                asio::post(self->strand_, [self, timer, complete_once]() mutable {
                     if (self->stopped_) {
                         timer->cancel();
-                        handler(asio::error::operation_aborted, T{});
+                        complete_once(std::make_error_code(std::errc::operation_canceled), T{});
                         return;
                     }
                     
@@ -275,13 +278,14 @@ public:
                         T msg = std::move(self->queue_.front());
                         self->queue_.pop_front();
                         timer->cancel();
-                        handler(std::error_code{}, std::move(msg));
+                        complete_once(std::error_code{}, std::move(msg));
                     } else {
                         // Queue empty - wait for message or timeout
-                        self->pending_handler_ = [handler = std::move(handler), timer](std::error_code ec, T msg) mutable {
+                        auto wrapper_handler = [timer, complete_once](std::error_code ec, T msg) mutable {
                             timer->cancel();
-                            handler(ec, std::move(msg));
+                            complete_once(ec, std::move(msg));
                         };
+                        self->pending_handler_ = std::make_unique<handler_impl<decltype(wrapper_handler)>>(std::move(wrapper_handler));
                     }
                 });
             },
@@ -299,13 +303,13 @@ public:
      * Returns asio::error::timed_out if timeout occurs and no messages are available.
      * If timeout occurs but some messages are available, returns those messages without error.
      */
-    template<typename Duration, typename CompletionToken = asio::default_completion_token_t<typename asio::strand<asio::io_context::executor_type>::executor_type>>
-    auto async_read_msgs_with_timeout(size_t max_count, Duration timeout, CompletionToken&& token = asio::default_completion_token_t<typename asio::strand<asio::io_context::executor_type>::executor_type>{}) {
+    template<typename Duration, typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>>
+    auto async_read_msgs_with_timeout(size_t max_count, Duration timeout, CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>{}) {
         return asio::async_initiate<CompletionToken, void(std::error_code, std::vector<T>)>(
             [self = this->shared_from_this(), max_count, timeout](auto handler) mutable {
                 auto timer = std::make_shared<asio::steady_timer>(self->io_context_);
                 auto handler_ptr = std::make_shared<decltype(handler)>(std::move(handler));
-                auto completed = std::make_shared<bool>(false);
+                auto completed = std::make_shared<std::atomic<bool>>(false);
                 
                 // Helper: read messages from queue
                 auto read_messages = [self, max_count]() -> std::vector<T> {
@@ -342,7 +346,7 @@ public:
                 asio::post(self->strand_, [self, timer, complete_once, read_messages]() mutable {
                     if (self->stopped_) {
                         timer->cancel();
-                        complete_once(asio::error::operation_aborted, std::vector<T>{});
+                        complete_once(std::make_error_code(std::errc::operation_canceled), std::vector<T>{});
                         return;
                     }
                     
@@ -369,8 +373,7 @@ public:
             // Cancel pending operations
             if (self->pending_handler_) {
                 auto handler = std::move(self->pending_handler_);
-                self->pending_handler_ = nullptr;
-                handler(asio::error::operation_aborted, T{});
+                handler->invoke(std::make_error_code(std::errc::operation_canceled), T{});
             }
         });
     }
@@ -390,13 +393,28 @@ public:
     }
 
 private:
+    // Handler wrapper interface for type erasure
+    struct handler_base {
+        virtual ~handler_base() = default;
+        virtual void invoke(std::error_code ec, T msg) = 0;
+    };
+    
+    template<typename Handler>
+    struct handler_impl : handler_base {
+        Handler handler_;
+        explicit handler_impl(Handler&& h) : handler_(std::move(h)) {}
+        void invoke(std::error_code ec, T msg) override {
+            handler_(ec, std::move(msg));
+        }
+    };
+    
     asio::io_context& io_context_;
     asio::strand<asio::io_context::executor_type> strand_;
     std::deque<T> queue_;
     bool stopped_;
     
-    // Pending async read handler
-    std::function<void(std::error_code, T)> pending_handler_;
+    // Pending async read handler (using unique_ptr for move-only handlers)
+    std::unique_ptr<handler_base> pending_handler_;
 };
 
 } // namespace bcast
