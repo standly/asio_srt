@@ -136,6 +136,70 @@ public:
     }
 
     /**
+     * @brief Publish multiple messages to all subscribers (batch operation)
+     * @param messages Vector of messages to broadcast
+     * 
+     * Thread-safe: can be called from any thread.
+     * More efficient than calling publish() multiple times.
+     * Each subscriber receives all messages.
+     * 
+     * Usage:
+     *   std::vector<Message> batch = {msg1, msg2, msg3};
+     *   dispatcher->publish_batch(batch);
+     */
+    void publish_batch(std::vector<T> messages) {
+        if (messages.empty()) {
+            return;
+        }
+        
+        asio::post(strand_, [self = this->shared_from_this(), messages = std::move(messages)]() {
+            for (auto& [id, queue] : self->subscribers_) {
+                // Each subscriber gets a copy of all messages
+                queue->push_batch(messages);
+            }
+        });
+    }
+
+    /**
+     * @brief Publish multiple messages using iterators
+     * @param begin Iterator to first message
+     * @param end Iterator past last message
+     * 
+     * Thread-safe: can be called from any thread
+     * 
+     * Usage:
+     *   std::vector<Message> msgs = {msg1, msg2, msg3};
+     *   dispatcher->publish_batch(msgs.begin(), msgs.end());
+     */
+    template<typename Iterator>
+    void publish_batch(Iterator begin, Iterator end) {
+        if (begin == end) {
+            return;
+        }
+        
+        std::vector<T> messages(begin, end);
+        publish_batch(std::move(messages));
+    }
+
+    /**
+     * @brief Publish multiple messages from initializer list
+     * @param init_list Initializer list of messages
+     * 
+     * Thread-safe: can be called from any thread
+     * 
+     * Usage:
+     *   dispatcher->publish_batch({msg1, msg2, msg3});
+     */
+    void publish_batch(std::initializer_list<T> init_list) {
+        if (init_list.size() == 0) {
+            return;
+        }
+        
+        std::vector<T> messages(init_list);
+        publish_batch(std::move(messages));
+    }
+
+    /**
      * @brief Get subscriber count (async)
      * @param callback Callback with count (called on strand)
      */

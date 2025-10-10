@@ -65,6 +65,92 @@ public:
     }
 
     /**
+     * @brief Push multiple messages to queue (batch operation)
+     * @param messages Vector of messages to enqueue
+     * 
+     * Thread-safe: can be called from any thread
+     * More efficient than calling push() multiple times.
+     * 
+     * Usage: 
+     *   std::vector<Message> batch = {msg1, msg2, msg3};
+     *   queue->push_batch(batch);
+     */
+    void push_batch(std::vector<T> messages) {
+        if (messages.empty()) {
+            return;
+        }
+        
+        asio::post(strand_, [self = this->shared_from_this(), messages = std::move(messages)]() mutable {
+            if (self->stopped_) {
+                return;
+            }
+            
+            // Add all messages to queue
+            for (auto& msg : messages) {
+                self->queue_.push_back(std::move(msg));
+            }
+            
+            // If there's a pending read operation, complete it with first message
+            if (self->pending_handler_ && !self->queue_.empty()) {
+                T message = std::move(self->queue_.front());
+                self->queue_.pop_front();
+                
+                auto handler = std::move(self->pending_handler_);
+                self->pending_handler_ = nullptr;
+                
+                handler(std::error_code{}, std::move(message));
+            }
+        });
+    }
+
+    /**
+     * @brief Push multiple messages to queue using iterators
+     * @param begin Iterator to first message
+     * @param end Iterator past last message
+     * 
+     * Thread-safe: can be called from any thread
+     * 
+     * Usage:
+     *   std::vector<Message> msgs = {msg1, msg2, msg3};
+     *   queue->push_batch(msgs.begin(), msgs.end());
+     *   
+     *   std::array<Message, 3> arr = {msg1, msg2, msg3};
+     *   queue->push_batch(arr.begin(), arr.end());
+     */
+    template<typename Iterator>
+    void push_batch(Iterator begin, Iterator end) {
+        if (begin == end) {
+            return;
+        }
+        
+        // Convert to vector for efficient move
+        std::vector<T> messages(
+            std::make_move_iterator(begin),
+            std::make_move_iterator(end)
+        );
+        
+        push_batch(std::move(messages));
+    }
+
+    /**
+     * @brief Push multiple messages from initializer list
+     * @param init_list Initializer list of messages
+     * 
+     * Thread-safe: can be called from any thread
+     * 
+     * Usage:
+     *   queue->push_batch({msg1, msg2, msg3});
+     */
+    void push_batch(std::initializer_list<T> init_list) {
+        if (init_list.size() == 0) {
+            return;
+        }
+        
+        std::vector<T> messages(init_list);
+        push_batch(std::move(messages));
+    }
+
+    /**
      * @brief Asynchronously read one message from queue (coroutine interface)
      * @return awaitable<T> Message read from queue
      * 
