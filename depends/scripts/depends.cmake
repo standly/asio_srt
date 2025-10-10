@@ -86,6 +86,15 @@ create_imported_target(
         INCLUDE ${DEP_RESOLVED_DIR}/srt/include
 )
 
+# The target is created as FMT::fmt
+create_imported_target(
+        PREFIX FMT
+        NAME fmt
+        LIBNAME libfmt.a
+        LIBBASE ${DEP_RESOLVED_DIR}/fmt
+        INCLUDE ${DEP_RESOLVED_DIR}/fmt/include
+)
+
 
 # --- Dependency Interface (Meta) Targets ---
 
@@ -106,12 +115,18 @@ target_link_libraries(SRT_LIB INTERFACE
 target_compile_definitions(SRT_LIB INTERFACE _GLIBCXX_USE_CXX11_ABI=1)
 
 
+# SRT Interface Target: Bundles the library and its required compile definitions.
+add_library(FMT_LIB INTERFACE)
+target_link_libraries(FMT_LIB INTERFACE
+        FMT::fmt
+)
 # Project Dependencies Meta Target: A single target to link all dependencies.
 # Projects should link against ProjectDependencies to get all requirements.
 add_library(ProjectDependencies INTERFACE)
 
 target_link_libraries(ProjectDependencies INTERFACE
         SRT_LIB
+        FMT_LIB
         # Add other dependency targets here as they are defined (e.g., FOLLY_LIB)
 )
 

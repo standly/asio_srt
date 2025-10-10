@@ -12,6 +12,7 @@ target_link_libraries(srt_server_example
     PRIVATE
     asrt
     SRT::srt
+        FMT::fmt
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
@@ -26,6 +27,7 @@ target_link_libraries(srt_client_example
     PRIVATE
     asrt
     SRT::srt
+        FMT::fmt
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
@@ -40,6 +42,7 @@ target_link_libraries(srt_advanced_server
     PRIVATE
     asrt
     SRT::srt
+        FMT::fmt
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
@@ -54,6 +57,7 @@ target_link_libraries(srt_server_v2_example
     PRIVATE
     asrt
     SRT::srt
+        FMT::fmt
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
@@ -68,6 +72,7 @@ target_link_libraries(srt_client_v2_example
     PRIVATE
     asrt
     SRT::srt
+        FMT::fmt
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
@@ -82,6 +87,7 @@ target_link_libraries(option_test_example
     PRIVATE
     asrt
     SRT::srt
+        FMT::fmt
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
@@ -97,6 +103,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/custom_logging_example.cpp)
         PRIVATE
         asrt
         SRT::srt
+            FMT::fmt
         OpenSSL::SSL
         OpenSSL::Crypto
         Threads::Threads
@@ -112,6 +119,7 @@ target_link_libraries(srt_streaming_example
     PRIVATE
     asrt
     SRT::srt
+        FMT::fmt
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
@@ -126,6 +134,7 @@ target_link_libraries(srt_resilient_client_example
     PRIVATE
     asrt
     SRT::srt
+        FMT::fmt
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads

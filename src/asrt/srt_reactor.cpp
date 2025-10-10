@@ -7,7 +7,6 @@
 #include <iostream>
 #include <future>
 #include <atomic>
-#include <sstream>
 
 namespace asrt {
 // Constructor, Destructor, and get_instance remain largely the same.
@@ -30,15 +29,12 @@ SrtReactor::SrtReactor()
     
     srt_epoll_id_ = srt_epoll_create();
     if (srt_epoll_id_ < 0) {
-        std::ostringstream oss;
-        oss << "Failed to create SRT epoll: " << srt_getlasterror_str();
-        ASRT_LOG_ERROR(oss.str());
-        throw std::runtime_error(oss.str());
+        const auto err_msg = std::string("Failed to create SRT epoll: ") + srt_getlasterror_str();
+        ASRT_LOG_ERROR("{}", err_msg);
+        throw std::runtime_error(err_msg);
     }
     
-    std::ostringstream oss;
-    oss << "SRT epoll created (id=" << srt_epoll_id_ << ")";
-    ASRT_LOG_INFO(oss.str());
+    ASRT_LOG_INFO("SRT epoll created (id={})", srt_epoll_id_);
     
     running_ = true;
     asio_thread_ = std::thread([this]() { io_context_.run(); });
@@ -226,18 +222,15 @@ void SrtReactor::async_add_op(SRTSOCKET srt_sock, int event_type, Handler&& hand
 
             int srt_events = op->events;
             if (srt_epoll_add_usock(srt_epoll_id_, srt_sock, &srt_events) != 0) {
-                std::ostringstream oss;
-                oss << "Failed to add socket " << srt_sock << " to epoll: " << srt_getlasterror_str();
-                ASRT_LOG_ERROR(oss.str());
+                const auto err_msg = std::string("Failed to add socket to epoll: ") + srt_getlasterror_str();
+                ASRT_LOG_ERROR("{}", err_msg);
                 auto ex = asio::get_associated_executor(h);
                 asio::post(ex, [h_moved = std::move(h)]() mutable {
                     h_moved(asrt::make_error_code(asrt::srt_errc::epoll_add_failed), 0);
                 });
                 return;
             }
-            std::ostringstream oss;
-            oss << "Socket " << srt_sock << " added to epoll (events=0x" << std::hex << srt_events << std::dec << ")";
-            ASRT_LOG_DEBUG(oss.str());
+            ASRT_LOG_DEBUG("Socket {} added to epoll (events=0x{:x})", srt_sock, srt_events);
             pending_ops_[srt_sock] = std::move(op);
         } else {
             // Socket found, update existing operation and modify epoll
@@ -246,9 +239,8 @@ void SrtReactor::async_add_op(SRTSOCKET srt_sock, int event_type, Handler&& hand
 
             int srt_events = op->events;
             if (srt_epoll_update_usock(srt_epoll_id_, srt_sock, &srt_events) != 0) {
-                 std::ostringstream oss;
-                 oss << "Failed to update socket " << srt_sock << " in epoll: " << srt_getlasterror_str();
-                 ASRT_LOG_ERROR(oss.str());
+                 const auto err_msg = std::string("Failed to update socket in epoll: ") + srt_getlasterror_str();
+                 ASRT_LOG_ERROR("{}", err_msg);
                  auto ex = asio::get_associated_executor(h);
                  asio::post(ex, [h_moved = std::move(h)]() mutable {
                     h_moved(asrt::make_error_code(asrt::srt_errc::epoll_update_failed), 0);
@@ -257,9 +249,7 @@ void SrtReactor::async_add_op(SRTSOCKET srt_sock, int event_type, Handler&& hand
                 op->clear_handler(event_type);
                 return;
             }
-            std::ostringstream oss;
-            oss << "Socket " << srt_sock << " updated in epoll (events=0x" << std::hex << srt_events << std::dec << ")";
-            ASRT_LOG_DEBUG(oss.str());
+            ASRT_LOG_DEBUG("Socket {} updated in epoll (events=0x{:x})", srt_sock, srt_events);
         }
     });
 }
@@ -316,13 +306,10 @@ void SrtReactor::poll_loop() {
                     auto ec = asrt::make_srt_error_code(error_msg);
                     
                     // 记录错误日志
-                    std::ostringstream oss;
-                    oss << "Socket " << sock << " error: " << ec.message();
-                    if (error_msg) {
-                        oss << " (" << error_msg << ")";
-                    }
-                    oss << " [events=0x" << std::hex << flags << std::dec << "]";
-                    ASRT_LOG_ERROR(oss.str());
+                    if(error_msg)
+                        ASRT_LOG_ERROR("Socket {} error: {} ({}) [events=0x{:x}]", sock, ec.message(), error_msg, flags);
+                    else
+                        ASRT_LOG_ERROR("Socket {} error: {} [events=0x{:x}]", sock, ec.message(), flags);
                     
                     // 收集所有需要通知的 handler
                     std::vector<std::pair<
@@ -360,9 +347,7 @@ void SrtReactor::poll_loop() {
                     srt_epoll_remove_usock(srt_epoll_id_, sock);
                     pending_ops_.erase(it);
                     
-                    std::ostringstream cleanup_oss;
-                    cleanup_oss << "Socket " << sock << " removed from epoll after error";
-                    ASRT_LOG_DEBUG(cleanup_oss.str());
+                    ASRT_LOG_DEBUG("Socket {} removed from epoll after error", sock);
                     
                     // 在 strand 外异步通知所有 handler
                     for (auto& [handler, executor] : handlers_to_notify) {
@@ -385,9 +370,7 @@ void SrtReactor::poll_loop() {
                 
                 // 处理可读事件
                 if ((flags & SRT_EPOLL_IN) && op->read_handler) {
-                    std::ostringstream oss;
-                    oss << "Socket " << sock << " readable";
-                    ASRT_LOG_DEBUG(oss.str());
+                    ASRT_LOG_DEBUG("Socket {} readable", sock);
                     auto ex = asio::get_associated_executor(
                         op->read_handler, 
                         io_context_.get_executor()
@@ -401,9 +384,7 @@ void SrtReactor::poll_loop() {
                 
                 // 处理可写事件
                 if ((flags & SRT_EPOLL_OUT) && op->write_handler) {
-                    std::ostringstream oss;
-                    oss << "Socket " << sock << " writable";
-                    ASRT_LOG_DEBUG(oss.str());
+                    ASRT_LOG_DEBUG("Socket {} writable", sock);
                     auto ex = asio::get_associated_executor(
                         op->write_handler, 
                         io_context_.get_executor()
@@ -443,13 +424,9 @@ void SrtReactor::cleanup_op(SRTSOCKET srt_sock, int event_type, const std::error
     }
     
     if (ec) {
-        std::ostringstream oss;
-        oss << "Cleaning up socket " << srt_sock << " with error: " << ec.message();
-        ASRT_LOG_DEBUG(oss.str());
+        ASRT_LOG_DEBUG("Cleaning up socket {} with error: {}", srt_sock, ec.message());
     } else {
-        std::ostringstream oss;
-        oss << "Cleaning up cancelled operation for socket " << srt_sock;
-        ASRT_LOG_DEBUG(oss.str());
+        ASRT_LOG_DEBUG("Cleaning up cancelled operation for socket {}", srt_sock);
     }
 
     auto& op = it->second;

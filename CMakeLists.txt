@@ -19,6 +19,7 @@ find_package(Threads REQUIRED)
 include_directories(${CMAKE_SOURCE_DIR}/src)
 include_directories(${CMAKE_SOURCE_DIR}/3rdparty/asio-1.36.0/include)
 include_directories(depends/resolved/srt/include)
+include_directories(depends/resolved/fmt/include)
 include(depends/scripts/depends.cmake)
 # Add subdirectories
 add_subdirectory(src)

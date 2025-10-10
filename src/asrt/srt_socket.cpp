@@ -1,8 +1,8 @@
 // srt_socket_v2.cpp - 更新的 SRT socket 实现
 #include "srt_socket.hpp"
-#include <sstream>
 #include <cstring>
 #include <arpa/inet.h>
+#include <stdexcept>
 
 namespace asrt {
 
@@ -16,15 +16,12 @@ SrtSocket::SrtSocket(SrtReactor& reactor)
     // 创建 SRT socket
     sock_ = srt_create_socket();
     if (sock_ == SRT_INVALID_SOCK) {
-        std::ostringstream oss;
-        oss << "Failed to create SRT socket: " << srt_getlasterror_str();
-        ASRT_LOG_ERROR(oss.str());
-        throw std::runtime_error(oss.str());
+        const auto err_msg = std::string("Failed to create SRT socket: ") + srt_getlasterror_str();
+        ASRT_LOG_ERROR("{}", err_msg);
+        throw std::runtime_error(err_msg);
     }
     
-    std::ostringstream oss;
-    oss << "SrtSocket created (fd=" << sock_ << ")";
-    ASRT_LOG_DEBUG(oss.str());
+    ASRT_LOG_DEBUG("SrtSocket created (fd={})", sock_);
     
     // 默认设置为非阻塞模式（这是 post 选项，可以立即设置）
     int no = 0;
@@ -38,15 +35,12 @@ SrtSocket::SrtSocket(const std::map<std::string, std::string>& options, SrtReact
     // 创建 SRT socket
     sock_ = srt_create_socket();
     if (sock_ == SRT_INVALID_SOCK) {
-        std::ostringstream oss;
-        oss << "Failed to create SRT socket: " << srt_getlasterror_str();
-        ASRT_LOG_ERROR(oss.str());
-        throw std::runtime_error(oss.str());
+        const auto err_msg = std::string("Failed to create SRT socket: ") + srt_getlasterror_str();
+        ASRT_LOG_ERROR("{}", err_msg);
+        throw std::runtime_error(err_msg);
     }
     
-    std::ostringstream oss;
-    oss << "SrtSocket created with options (fd=" << sock_ << ")";
-    ASRT_LOG_DEBUG(oss.str());
+    ASRT_LOG_DEBUG("SrtSocket created with options (fd={})", sock_);
     
     // 默认设置为非阻塞模式
     int no = 0;
@@ -60,9 +54,7 @@ SrtSocket::SrtSocket(const std::map<std::string, std::string>& options, SrtReact
 SrtSocket::SrtSocket(SRTSOCKET sock, SrtReactor& reactor)
     : reactor_(reactor), sock_(sock) {
     
-    std::ostringstream oss;
-    oss << "SrtSocket created from accepted socket (fd=" << sock_ << ")";
-    ASRT_LOG_DEBUG(oss.str());
+    ASRT_LOG_DEBUG("SrtSocket created from accepted socket (fd={})", sock_);
     
     // 确保非阻塞
     int no = 0;
@@ -105,9 +97,7 @@ SrtSocket::~SrtSocket() {
 
 void SrtSocket::close() {
     if (sock_ != SRT_INVALID_SOCK) {
-        std::ostringstream oss;
-        oss << "Closing SrtSocket (fd=" << sock_ << ")";
-        ASRT_LOG_DEBUG(oss.str());
+        ASRT_LOG_DEBUG("Closing SrtSocket (fd={})", sock_);
         
         srt_close(sock_);
         sock_ = SRT_INVALID_SOCK;
@@ -127,12 +117,11 @@ bool SrtSocket::apply_pre_options() {
     
     auto failures = options_.apply_pre(sock_);
     if (!failures.empty()) {
-        std::ostringstream oss;
-        oss << "Failed to apply pre options: ";
+        std::string failed_options;
         for (const auto& f : failures) {
-            oss << f << " ";
+            failed_options += f + " ";
         }
-        ASRT_LOG_WARNING(oss.str());
+        ASRT_LOG_WARNING("Failed to apply pre options: {}", failed_options);
     }
     
     options_applied_pre_ = true;
@@ -142,12 +131,11 @@ bool SrtSocket::apply_pre_options() {
 bool SrtSocket::apply_post_options() {
     auto failures = options_.apply_post(sock_);
     if (!failures.empty()) {
-        std::ostringstream oss;
-        oss << "Failed to apply post options: ";
+        std::string failed_options;
         for (const auto& f : failures) {
-            oss << f << " ";
+            failed_options += f + " ";
         }
-        ASRT_LOG_WARNING(oss.str());
+        ASRT_LOG_WARNING("Failed to apply post options: {}", failed_options);
     }
     return failures.empty();
 }
@@ -160,10 +148,7 @@ void SrtSocket::srt_connect_callback_fn(void* opaq, SRTSOCKET ns, int errorcode,
         return;
     }
     
-    std::ostringstream oss;
-    oss << "SRT connect callback: socket=" << ns << ", error=" << errorcode 
-        << ", token=" << token;
-    ASRT_LOG_DEBUG(oss.str());
+    ASRT_LOG_DEBUG("SRT connect callback: socket={}, error={}, token={}", ns, errorcode, token);
     
     // 转换错误码
     std::error_code ec;
@@ -177,7 +162,7 @@ void SrtSocket::srt_connect_callback_fn(void* opaq, SRTSOCKET ns, int errorcode,
         try {
             socket->connect_callback_(ec, *socket);
         } catch (const std::exception& e) {
-            ASRT_LOG_ERROR("Exception in connect callback: " + std::string(e.what()));
+            ASRT_LOG_ERROR("Exception in connect callback: {}", e.what());
         } catch (...) {
             ASRT_LOG_ERROR("Unknown exception in connect callback");
         }
@@ -193,9 +178,7 @@ asio::awaitable<void> SrtSocket::async_connect(const std::string& host, uint16_t
         throw std::runtime_error("Socket is not open");
     }
     
-    std::ostringstream oss;
-    oss << "Connecting to " << host << ":" << port << " (fd=" << sock_ << ")";
-    ASRT_LOG_INFO(oss.str());
+    ASRT_LOG_INFO("Connecting to {}:{} (fd={})", host, port, sock_);
     
     // 应用 pre 选项（pre-bind 选项对于客户端通常不需要，除非绑定本地地址）
     if (!apply_pre_options()) {
@@ -206,7 +189,7 @@ asio::awaitable<void> SrtSocket::async_connect(const std::string& host, uint16_t
     if (connect_callback_) {
         int result = srt_connect_callback(sock_, &SrtSocket::srt_connect_callback_fn, this);
         if (result == SRT_ERROR) {
-            ASRT_LOG_WARNING("Failed to set connect callback: " + std::string(srt_getlasterror_str()));
+            ASRT_LOG_WARNING("Failed to set connect callback: {}", srt_getlasterror_str());
         }
     }
     
@@ -217,9 +200,8 @@ asio::awaitable<void> SrtSocket::async_connect(const std::string& host, uint16_t
     sa.sin_port = htons(port);
     
     if (inet_pton(AF_INET, host.c_str(), &sa.sin_addr) != 1) {
-        std::ostringstream err_oss;
-        err_oss << "Invalid IP address: " << host;
-        ASRT_LOG_ERROR(err_oss.str());
+        const auto err_msg = std::string("Invalid IP address: ") + host;
+        ASRT_LOG_ERROR("{}", err_msg);
         
         std::error_code ec = std::make_error_code(std::errc::invalid_argument);
         if (connect_callback_) {
@@ -248,20 +230,16 @@ asio::awaitable<void> SrtSocket::async_connect(const std::string& host, uint16_t
                     const char* error_msg = nullptr;
                     std::error_code ec = make_srt_error_code(error_msg);
                     
-                    std::ostringstream err_oss;
-                    err_oss << "Connection failed: " << ec.message();
-                    if (error_msg) {
-                        err_oss << " (" << error_msg << ")";
-                    }
-                    ASRT_LOG_ERROR(err_oss.str());
+                    if(error_msg)
+                        ASRT_LOG_ERROR("Connection failed: {} ({})", ec.message(), error_msg);
+                    else
+                        ASRT_LOG_ERROR("Connection failed: {}", ec.message());
                     
                     // 注意：原生回调可能已经被调用
                     throw asio::system_error(ec);
                 }
                 
-                std::ostringstream success_oss;
-                success_oss << "Connected successfully (fd=" << sock_ << ")";
-                ASRT_LOG_INFO(success_oss.str());
+                ASRT_LOG_INFO("Connected successfully (fd={})", sock_);
                 
                 // 应用 post 选项
                 apply_post_options();
@@ -278,12 +256,10 @@ asio::awaitable<void> SrtSocket::async_connect(const std::string& host, uint16_t
             const char* error_msg = nullptr;
             std::error_code ec = make_srt_error_code(error_msg);
             
-            std::ostringstream err_oss;
-            err_oss << "Connection failed immediately: " << ec.message();
-            if (error_msg) {
-                err_oss << " (" << error_msg << ")";
-            }
-            ASRT_LOG_ERROR(err_oss.str());
+            if(error_msg)
+                ASRT_LOG_ERROR("Connection failed immediately: {} ({})", ec.message(), error_msg);
+            else
+                ASRT_LOG_ERROR("Connection failed immediately: {}", ec.message());
             
             // 清理回调
             srt_connect_callback(sock_, nullptr, nullptr);
@@ -296,9 +272,7 @@ asio::awaitable<void> SrtSocket::async_connect(const std::string& host, uint16_t
     }
     
     // 连接立即成功（不太可能，但处理这种情况）
-    std::ostringstream success_oss;
-    success_oss << "Connected immediately (fd=" << sock_ << ")";
-    ASRT_LOG_INFO(success_oss.str());
+    ASRT_LOG_INFO("Connected immediately (fd={})", sock_);
     
     // 应用 post 选项
     apply_post_options();
@@ -313,10 +287,7 @@ asio::awaitable<void> SrtSocket::async_connect(const std::string& host, uint16_t
         throw std::runtime_error("Socket is not open");
     }
     
-    std::ostringstream oss;
-    oss << "Connecting to " << host << ":" << port << " with timeout " 
-        << timeout.count() << "ms (fd=" << sock_ << ")";
-    ASRT_LOG_INFO(oss.str());
+    ASRT_LOG_INFO("Connecting to {}:{} with timeout {}ms (fd={})", host, port, timeout.count(), sock_);
     
     // 应用 pre 选项
     if (!apply_pre_options()) {
@@ -327,7 +298,7 @@ asio::awaitable<void> SrtSocket::async_connect(const std::string& host, uint16_t
     if (connect_callback_) {
         int result = srt_connect_callback(sock_, &SrtSocket::srt_connect_callback_fn, this);
         if (result == SRT_ERROR) {
-            ASRT_LOG_WARNING("Failed to set connect callback: " + std::string(srt_getlasterror_str()));
+            ASRT_LOG_WARNING("Failed to set connect callback: {}", srt_getlasterror_str());
         }
     }
     
@@ -338,9 +309,8 @@ asio::awaitable<void> SrtSocket::async_connect(const std::string& host, uint16_t
     sa.sin_port = htons(port);
     
     if (inet_pton(AF_INET, host.c_str(), &sa.sin_addr) != 1) {
-        std::ostringstream err_oss;
-        err_oss << "Invalid IP address: " << host;
-        ASRT_LOG_ERROR(err_oss.str());
+        const auto err_msg = std::string("Invalid IP address: ") + host;
+        ASRT_LOG_ERROR("{}", err_msg);
         
         std::error_code ec = std::make_error_code(std::errc::invalid_argument);
         
@@ -372,12 +342,10 @@ asio::awaitable<void> SrtSocket::async_connect(const std::string& host, uint16_t
                     const char* error_msg = nullptr;
                     std::error_code ec = make_srt_error_code(error_msg);
                     
-                    std::ostringstream err_oss;
-                    err_oss << "Connection failed: " << ec.message();
-                    if (error_msg) {
-                        err_oss << " (" << error_msg << ")";
-                    }
-                    ASRT_LOG_ERROR(err_oss.str());
+                    if(error_msg)
+                        ASRT_LOG_ERROR("Connection failed: {} ({})", ec.message(), error_msg);
+                    else
+                        ASRT_LOG_ERROR("Connection failed: {}", ec.message());
                     
                     // 清理回调
                     srt_connect_callback(sock_, nullptr, nullptr);
@@ -385,9 +353,7 @@ asio::awaitable<void> SrtSocket::async_connect(const std::string& host, uint16_t
                     throw asio::system_error(ec);
                 }
                 
-                std::ostringstream success_oss;
-                success_oss << "Connected successfully (fd=" << sock_ << ")";
-                ASRT_LOG_INFO(success_oss.str());
+                ASRT_LOG_INFO("Connected successfully (fd={})", sock_);
                 
                 // 应用 post 选项
                 apply_post_options();
@@ -402,12 +368,10 @@ asio::awaitable<void> SrtSocket::async_connect(const std::string& host, uint16_t
             const char* error_msg = nullptr;
             std::error_code ec = make_srt_error_code(error_msg);
             
-            std::ostringstream err_oss;
-            err_oss << "Connection failed immediately: " << ec.message();
-            if (error_msg) {
-                err_oss << " (" << error_msg << ")";
-            }
-            ASRT_LOG_ERROR(err_oss.str());
+            if(error_msg)
+                ASRT_LOG_ERROR("Connection failed immediately: {} ({})", ec.message(), error_msg);
+            else
+                ASRT_LOG_ERROR("Connection failed immediately: {}", ec.message());
             
             // 清理回调
             srt_connect_callback(sock_, nullptr, nullptr);
@@ -419,9 +383,7 @@ asio::awaitable<void> SrtSocket::async_connect(const std::string& host, uint16_t
         }
     }
     
-    std::ostringstream success_oss;
-    success_oss << "Connected immediately (fd=" << sock_ << ")";
-    ASRT_LOG_INFO(success_oss.str());
+    ASRT_LOG_INFO("Connected immediately (fd={})", sock_);
     
     // 应用 post 选项
     apply_post_options();
@@ -447,12 +409,11 @@ int SrtSocket::try_recv_packet(char* data, size_t max_size, std::error_code& ec)
             const char* error_msg = nullptr;
             ec = make_srt_error_code(error_msg);
             
-            std::ostringstream oss;
-            oss << "Receive failed (fd=" << sock_ << "): " << ec.message();
-            if (error_msg) {
-                oss << " (" << error_msg << ")";
-            }
-            ASRT_LOG_ERROR(oss.str());
+            if (error_msg)
+                ASRT_LOG_ERROR("Receive failed (fd={}): {} ({})", sock_, ec.message(), error_msg);
+            else
+                ASRT_LOG_ERROR("Receive failed (fd={}): {}", sock_, ec.message());
+
             return -1;
         }
     }
@@ -475,12 +436,11 @@ int SrtSocket::try_send_packet(const char* data, size_t size, std::error_code& e
             const char* error_msg = nullptr;
             ec = make_srt_error_code(error_msg);
             
-            std::ostringstream oss;
-            oss << "Send failed (fd=" << sock_ << "): " << ec.message();
-            if (error_msg) {
-                oss << " (" << error_msg << ")";
-            }
-            ASRT_LOG_ERROR(oss.str());
+            if (error_msg)
+                ASRT_LOG_ERROR("Send failed (fd={}): {} ({})", sock_, ec.message(), error_msg);
+            else
+                ASRT_LOG_ERROR("Send failed (fd={}): {}", sock_, ec.message());
+
             return -1;
         }
     }
@@ -494,9 +454,7 @@ asio::awaitable<size_t> SrtSocket::async_read_packet(char* data, size_t max_size
         throw std::runtime_error("Socket is not open");
     }
     
-    std::ostringstream oss;
-    oss << "Reading packet (fd=" << sock_ << ", max_size=" << max_size << ")";
-    ASRT_LOG_DEBUG(oss.str());
+    ASRT_LOG_DEBUG("Reading packet (fd={}, max_size={})", sock_, max_size);
     
     while (true) {
         // 先尝试直接读取
@@ -505,9 +463,7 @@ asio::awaitable<size_t> SrtSocket::async_read_packet(char* data, size_t max_size
         
         if (bytes > 0) {
             // 成功读取
-            std::ostringstream success_oss;
-            success_oss << "Read " << bytes << " bytes (fd=" << sock_ << ")";
-            ASRT_LOG_DEBUG(success_oss.str());
+            ASRT_LOG_DEBUG("Read {} bytes (fd={})", bytes, sock_);
             co_return bytes;
         }
         
@@ -528,10 +484,7 @@ asio::awaitable<size_t> SrtSocket::async_read_packet(char* data, size_t max_size
         throw std::runtime_error("Socket is not open");
     }
     
-    std::ostringstream oss;
-    oss << "Reading packet with timeout " << timeout.count() 
-        << "ms (fd=" << sock_ << ", max_size=" << max_size << ")";
-    ASRT_LOG_DEBUG(oss.str());
+    ASRT_LOG_DEBUG("Reading packet with timeout {}ms (fd={}, max_size={})", timeout.count(), sock_, max_size);
     
     while (true) {
         // 先尝试直接读取
@@ -539,9 +492,7 @@ asio::awaitable<size_t> SrtSocket::async_read_packet(char* data, size_t max_size
         int bytes = try_recv_packet(data, max_size, ec);
         
         if (bytes > 0) {
-            std::ostringstream success_oss;
-            success_oss << "Read " << bytes << " bytes (fd=" << sock_ << ")";
-            ASRT_LOG_DEBUG(success_oss.str());
+            ASRT_LOG_DEBUG("Read {} bytes (fd={})", bytes, sock_);
             co_return bytes;
         }
         
@@ -560,9 +511,7 @@ asio::awaitable<size_t> SrtSocket::async_write_packet(const char* data, size_t s
         throw std::runtime_error("Socket is not open");
     }
     
-    std::ostringstream oss;
-    oss << "Writing packet (fd=" << sock_ << ", size=" << size << ")";
-    ASRT_LOG_DEBUG(oss.str());
+    ASRT_LOG_DEBUG("Writing packet (fd={}, size={})", sock_, size);
     
     while (true) {
         // 先尝试直接写入
@@ -571,9 +520,7 @@ asio::awaitable<size_t> SrtSocket::async_write_packet(const char* data, size_t s
         
         if (bytes > 0) {
             // 成功写入
-            std::ostringstream success_oss;
-            success_oss << "Wrote " << bytes << " bytes (fd=" << sock_ << ")";
-            ASRT_LOG_DEBUG(success_oss.str());
+            ASRT_LOG_DEBUG("Wrote {} bytes (fd={})", bytes, sock_);
             co_return bytes;
         }
         
@@ -594,10 +541,7 @@ asio::awaitable<size_t> SrtSocket::async_write_packet(const char* data, size_t s
         throw std::runtime_error("Socket is not open");
     }
     
-    std::ostringstream oss;
-    oss << "Writing packet with timeout " << timeout.count() 
-        << "ms (fd=" << sock_ << ", size=" << size << ")";
-    ASRT_LOG_DEBUG(oss.str());
+    ASRT_LOG_DEBUG("Writing packet with timeout {}ms (fd={}, size={})", timeout.count(), sock_, size);
     
     while (true) {
         // 先尝试直接写入
@@ -605,9 +549,7 @@ asio::awaitable<size_t> SrtSocket::async_write_packet(const char* data, size_t s
         int bytes = try_send_packet(data, size, ec);
         
         if (bytes > 0) {
-            std::ostringstream success_oss;
-            success_oss << "Wrote " << bytes << " bytes (fd=" << sock_ << ")";
-            ASRT_LOG_DEBUG(success_oss.str());
+            ASRT_LOG_DEBUG("Wrote {} bytes (fd={})", bytes, sock_);
             co_return bytes;
         }
         
@@ -639,9 +581,7 @@ bool SrtSocket::get_stats(SRT_TRACEBSTATS& stats) const {
     
     int result = srt_bstats(sock_, &stats, true);
     if (result == SRT_ERROR) {
-        std::ostringstream oss;
-        oss << "Failed to get stats (fd=" << sock_ << "): " << srt_getlasterror_str();
-        ASRT_LOG_ERROR(oss.str());
+        ASRT_LOG_ERROR("Failed to get stats (fd={}): {}", sock_, srt_getlasterror_str());
         return false;
     }
     
@@ -698,9 +638,7 @@ std::string SrtSocket::sockaddr_to_string(const sockaddr* addr) {
         return "";
     }
     
-    std::ostringstream oss;
-    oss << ip_str << ":" << port;
-    return oss.str();
+    return std::string(ip_str) + ":" + std::to_string(port);
 }
 
 } // namespace asrt

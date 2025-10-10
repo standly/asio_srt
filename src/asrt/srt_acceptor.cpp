@@ -1,8 +1,8 @@
 // srt_acceptor_v2.cpp - 更新的 SRT acceptor 实现
 #include "srt_acceptor.hpp"
-#include <sstream>
 #include <cstring>
 #include <arpa/inet.h>
+#include <stdexcept>
 
 namespace asrt {
 
@@ -12,15 +12,12 @@ SrtAcceptor::SrtAcceptor(SrtReactor& reactor)
     // 创建 SRT socket
     sock_ = srt_create_socket();
     if (sock_ == SRT_INVALID_SOCK) {
-        std::ostringstream oss;
-        oss << "Failed to create SRT acceptor socket: " << srt_getlasterror_str();
-        ASRT_LOG_ERROR(oss.str());
-        throw std::runtime_error(oss.str());
+        const auto err_msg = std::string("Failed to create SRT acceptor socket: ") + srt_getlasterror_str();
+        ASRT_LOG_ERROR("{}", err_msg);
+        throw std::runtime_error(err_msg);
     }
     
-    std::ostringstream oss;
-    oss << "SrtAcceptor created (fd=" << sock_ << ")";
-    ASRT_LOG_DEBUG(oss.str());
+    ASRT_LOG_DEBUG("SrtAcceptor created (fd={})", sock_);
     
     // 设置为非阻塞模式（这是 post 选项，可以立即设置）
     int no = 0;
@@ -34,15 +31,12 @@ SrtAcceptor::SrtAcceptor(const std::map<std::string, std::string>& options, SrtR
     // 创建 SRT socket
     sock_ = srt_create_socket();
     if (sock_ == SRT_INVALID_SOCK) {
-        std::ostringstream oss;
-        oss << "Failed to create SRT acceptor socket: " << srt_getlasterror_str();
-        ASRT_LOG_ERROR(oss.str());
-        throw std::runtime_error(oss.str());
+        const auto err_msg = std::string("Failed to create SRT acceptor socket: ") + srt_getlasterror_str();
+        ASRT_LOG_ERROR("{}", err_msg);
+        throw std::runtime_error(err_msg);
     }
     
-    std::ostringstream oss;
-    oss << "SrtAcceptor created with options (fd=" << sock_ << ")";
-    ASRT_LOG_DEBUG(oss.str());
+    ASRT_LOG_DEBUG("SrtAcceptor created with options (fd={})", sock_);
     
     // 设置为非阻塞模式
     int no = 0;
@@ -81,9 +75,7 @@ SrtAcceptor::~SrtAcceptor() {
 
 void SrtAcceptor::close() {
     if (sock_ != SRT_INVALID_SOCK) {
-        std::ostringstream oss;
-        oss << "Closing SrtAcceptor (fd=" << sock_ << ")";
-        ASRT_LOG_DEBUG(oss.str());
+        ASRT_LOG_DEBUG("Closing SrtAcceptor (fd={})", sock_);
         
         // 清理回调
         srt_listen_callback(sock_, nullptr, nullptr);
@@ -106,12 +98,11 @@ bool SrtAcceptor::apply_pre_options() {
     
     auto failures = options_.apply_pre(sock_);
     if (!failures.empty()) {
-        std::ostringstream oss;
-        oss << "Failed to apply pre options: ";
+        std::string failed_options;
         for (const auto& f : failures) {
-            oss << f << " ";
+            failed_options += f + " ";
         }
-        ASRT_LOG_WARNING(oss.str());
+        ASRT_LOG_WARNING("Failed to apply pre options: {}", failed_options);
     }
     
     options_applied_pre_ = true;
@@ -130,10 +121,7 @@ int SrtAcceptor::srt_listen_callback_fn(void* opaq, SRTSOCKET ns, int hsversion,
     std::string peer_addr = sockaddr_to_string(peeraddr);
     std::string stream_id = streamid ? streamid : "";
     
-    std::ostringstream oss;
-    oss << "SRT listen callback: socket=" << ns << ", hsversion=" << hsversion 
-        << ", peer=" << peer_addr << ", streamid=" << stream_id;
-    ASRT_LOG_DEBUG(oss.str());
+    ASRT_LOG_DEBUG("SRT listen callback: socket={}, hsversion={}, peer={}, streamid={}", ns, hsversion, peer_addr, stream_id);
     
     // 创建临时 SrtSocket 对象用于回调
     // 注意：这个 socket 还没有被接受，只是用于回调中设置选项
@@ -144,9 +132,9 @@ int SrtAcceptor::srt_listen_callback_fn(void* opaq, SRTSOCKET ns, int hsversion,
         int result = acceptor->listener_callback_(temp_socket, hsversion, stream_id);
         
         if (result == 0) {
-            ASRT_LOG_INFO("Connection accepted from " + peer_addr);
+            ASRT_LOG_INFO("Connection accepted from {}", peer_addr);
         } else {
-            ASRT_LOG_INFO("Connection rejected from " + peer_addr);
+            ASRT_LOG_INFO("Connection rejected from {}", peer_addr);
         }
         
         // 释放临时 socket 的所有权（不关闭实际的socket）
@@ -155,7 +143,7 @@ int SrtAcceptor::srt_listen_callback_fn(void* opaq, SRTSOCKET ns, int hsversion,
         
         return result;
     } catch (const std::exception& e) {
-        ASRT_LOG_ERROR("Exception in listener callback: " + std::string(e.what()));
+        ASRT_LOG_ERROR("Exception in listener callback: {}", e.what());
         // 释放临时 socket 的所有权
         temp_socket.sock_ = SRT_INVALID_SOCK;
         return -1;  // 拒绝连接
@@ -175,7 +163,7 @@ void SrtAcceptor::set_listener_callback(ListenerCallback callback) {
         if (listener_callback_) {
             int result = srt_listen_callback(sock_, &SrtAcceptor::srt_listen_callback_fn, this);
             if (result == SRT_ERROR) {
-                ASRT_LOG_WARNING("Failed to set listen callback: " + std::string(srt_getlasterror_str()));
+                ASRT_LOG_WARNING("Failed to set listen callback: {}", srt_getlasterror_str());
             } else {
                 ASRT_LOG_DEBUG("Listen callback set successfully");
             }
@@ -196,9 +184,7 @@ void SrtAcceptor::bind(const std::string& address, uint16_t port, int backlog) {
         throw std::runtime_error("Acceptor is not open");
     }
     
-    std::ostringstream oss;
-    oss << "Binding to " << address << ":" << port << " (fd=" << sock_ << ")";
-    ASRT_LOG_INFO(oss.str());
+    ASRT_LOG_INFO("Binding to {}:{} (fd={})", address, port, sock_);
     
     // 应用 pre-bind 选项
     if (!apply_pre_bind_options()) {
@@ -215,19 +201,17 @@ void SrtAcceptor::bind(const std::string& address, uint16_t port, int backlog) {
         sa.sin_addr.s_addr = INADDR_ANY;
     } else {
         if (inet_pton(AF_INET, address.c_str(), &sa.sin_addr) != 1) {
-            std::ostringstream err_oss;
-            err_oss << "Invalid IP address: " << address;
-            ASRT_LOG_ERROR(err_oss.str());
-            throw std::runtime_error(err_oss.str());
+            const auto err_msg = std::string("Invalid IP address: ") + address;
+            ASRT_LOG_ERROR("{}", err_msg);
+            throw std::runtime_error(err_msg);
         }
     }
     
     // 绑定
     if (srt_bind(sock_, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) == SRT_ERROR) {
-        std::ostringstream err_oss;
-        err_oss << "Failed to bind: " << srt_getlasterror_str();
-        ASRT_LOG_ERROR(err_oss.str());
-        throw std::runtime_error(err_oss.str());
+        const auto err_msg = std::string("Failed to bind: ") + srt_getlasterror_str();
+        ASRT_LOG_ERROR("{}", err_msg);
+        throw std::runtime_error(err_msg);
     }
     
     // 应用 pre 选项
@@ -239,21 +223,18 @@ void SrtAcceptor::bind(const std::string& address, uint16_t port, int backlog) {
     if (listener_callback_) {
         int result = srt_listen_callback(sock_, &SrtAcceptor::srt_listen_callback_fn, this);
         if (result == SRT_ERROR) {
-            ASRT_LOG_WARNING("Failed to set listen callback: " + std::string(srt_getlasterror_str()));
+            ASRT_LOG_WARNING("Failed to set listen callback: {}", srt_getlasterror_str());
         }
     }
     
     // 监听
     if (srt_listen(sock_, backlog) == SRT_ERROR) {
-        std::ostringstream err_oss;
-        err_oss << "Failed to listen: " << srt_getlasterror_str();
-        ASRT_LOG_ERROR(err_oss.str());
-        throw std::runtime_error(err_oss.str());
+        const auto err_msg = std::string("Failed to listen: ") + srt_getlasterror_str();
+        ASRT_LOG_ERROR("{}", err_msg);
+        throw std::runtime_error(err_msg);
     }
     
-    std::ostringstream success_oss;
-    success_oss << "Listening on " << local_address() << " (fd=" << sock_ << ", backlog=" << backlog << ")";
-    ASRT_LOG_INFO(success_oss.str());
+    ASRT_LOG_INFO("Listening on {} (fd={}, backlog={})", local_address(), sock_, backlog);
 }
 
 // ========================================
@@ -275,12 +256,11 @@ SRTSOCKET SrtAcceptor::try_accept(sockaddr_storage& client_addr, int& addr_len, 
             const char* error_msg = nullptr;
             ec = make_srt_error_code(error_msg);
             
-            std::ostringstream oss;
-            oss << "Accept failed (fd=" << sock_ << "): " << ec.message();
-            if (error_msg) {
-                oss << " (" << error_msg << ")";
-            }
-            ASRT_LOG_ERROR(oss.str());
+            if(error_msg)
+                ASRT_LOG_ERROR("Accept failed (fd={}): {} ({})", sock_, ec.message(), error_msg);
+            else
+                ASRT_LOG_ERROR("Accept failed (fd={}): {}", sock_, ec.message());
+
             return SRT_INVALID_SOCK;
         }
     }
@@ -308,9 +288,7 @@ asio::awaitable<SrtSocket> SrtAcceptor::async_accept() {
             // 成功接受连接
             std::string client_addr_str = sockaddr_to_string(reinterpret_cast<sockaddr*>(&client_addr));
             
-            std::ostringstream oss;
-            oss << "Accepted connection from " << client_addr_str << " (client_fd=" << client_sock << ")";
-            ASRT_LOG_INFO(oss.str());
+            ASRT_LOG_INFO("Accepted connection from {} (client_fd={})", client_addr_str, client_sock);
             
             // 创建 SrtSocket 对象
             // 注意：如果设置了 listener callback，它已经在 srt_accept 之前被调用了
@@ -339,9 +317,7 @@ asio::awaitable<SrtSocket> SrtAcceptor::async_accept(std::chrono::milliseconds t
         throw std::runtime_error("Acceptor is not open");
     }
     
-    std::ostringstream oss;
-    oss << "Waiting for incoming connection with timeout " << timeout.count() << "ms...";
-    ASRT_LOG_DEBUG(oss.str());
+    ASRT_LOG_DEBUG("Waiting for incoming connection with timeout {}ms...", timeout.count());
     
     while (true) {
         // 先尝试直接接受
@@ -355,9 +331,7 @@ asio::awaitable<SrtSocket> SrtAcceptor::async_accept(std::chrono::milliseconds t
             // 成功接受连接
             std::string client_addr_str = sockaddr_to_string(reinterpret_cast<sockaddr*>(&client_addr));
             
-            std::ostringstream success_oss;
-            success_oss << "Accepted connection from " << client_addr_str << " (client_fd=" << client_sock << ")";
-            ASRT_LOG_INFO(success_oss.str());
+            ASRT_LOG_INFO("Accepted connection from {} (client_fd={})", client_addr_str, client_sock);
             
             // 创建 SrtSocket 对象
             SrtSocket client_socket(client_sock, reactor_);
@@ -419,9 +393,7 @@ std::string SrtAcceptor::sockaddr_to_string(const sockaddr* addr) {
         return "";
     }
     
-    std::ostringstream oss;
-    oss << ip_str << ":" << port;
-    return oss.str();
+    return std::string(ip_str) + ":" + std::to_string(port);
 }
 
 } // namespace asrt

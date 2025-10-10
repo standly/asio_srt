@@ -3,10 +3,11 @@
 
 #include <srt/srt.h>
 #include <string>
-#include <sstream>
 #include <iostream>
 #include <functional>
+#include <fmt/format.h>
 #include <mutex>
+#include <string_view>
 
 namespace asrt {
 
@@ -33,8 +34,7 @@ class SrtLog {
 public:
     // 初始化 SRT 日志系统（在 Reactor 启动时调用）
     static void init(LogLevel level = LogLevel::Notice) {
-        std::lock_guard<std::mutex> lock(get_mutex());
-        
+
         // 保存日志级别
         get_level_ref() = level;
         
@@ -50,27 +50,25 @@ public:
     
     // 设置日志级别
     static void set_level(LogLevel level) {
-        std::lock_guard<std::mutex> lock(get_mutex());
         get_level_ref() = level;
         srt_setloglevel(static_cast<int>(level));
     }
     
     // 获取当前日志级别
     static LogLevel get_level() {
-        std::lock_guard<std::mutex> lock(get_mutex());
         return get_level_ref();
     }
     
     // 设置自定义日志回调
     // callback: nullptr 表示使用默认输出（stderr）
     static void set_callback(LogCallback callback) {
-        std::lock_guard<std::mutex> lock(get_mutex());
         get_callback_ref() = std::move(callback);
     }
     
-    // 记录日志（从 Reactor 代码调用）
-    static void log(LogLevel level, const char* area, const std::string& message,
-                   const char* file = "", const char* function = "", int line = 0) {
+    template<typename... Args>
+    static void log(LogLevel level, const char* area,
+                   const char* file , const char* function , int line,
+                   const std::string_view fmt_str, Args&&... args) {
         // 由于SRT的log_handler不支持function参数，我们需要单独处理
         // 如果是Reactor的日志且有用户回调，直接调用用户回调
         
@@ -78,7 +76,8 @@ public:
         if (static_cast<int>(level) > static_cast<int>(get_level_ref())) {
             return;
         }
-        
+
+        auto message = fmt::format(fmt_str, std::forward<Args>(args)...);
         auto& callback = get_callback_ref();
         if (callback && area && std::string(area) == "Reactor") {
             // Reactor日志，直接调用用户回调，保留function信息
@@ -93,8 +92,7 @@ private:
     // SRT 日志处理器（同时处理 Reactor 和 SRT 库的所有日志）
     static void log_handler(void* /*opaque*/, int level, const char* file, int line, 
                            const char* area, const char* message) {
-        std::lock_guard<std::mutex> lock(get_mutex());
-        
+
         // 转换日志级别
         LogLevel log_level = static_cast<LogLevel>(level);
         
@@ -136,13 +134,7 @@ private:
             std::cerr << message << std::endl;
         }
     }
-    
-    // 单例模式的静态成员（避免静态初始化顺序问题）
-    static std::mutex& get_mutex() {
-        static std::mutex mutex;
-        return mutex;
-    }
-    
+
     static LogCallback& get_callback_ref() {
         static LogCallback callback;
         return callback;
@@ -157,14 +149,14 @@ private:
 } // namespace asrt
 
 // 便捷的日志宏（自动添加文件名、函数名、行号）
-#define ASRT_LOG_DEBUG(msg) \
-    asrt::SrtLog::log(asrt::LogLevel::Debug, "Reactor", msg, __FILE__, __FUNCTION__, __LINE__)
+#define ASRT_LOG_DEBUG(fmt, ...) \
+    asrt::SrtLog::log(asrt::LogLevel::Debug, "Reactor", __FILE__, __FUNCTION__, __LINE__, fmt, ##__VA_ARGS__)
 
-#define ASRT_LOG_INFO(msg) \
-    asrt::SrtLog::log(asrt::LogLevel::Notice, "Reactor", msg, __FILE__, __FUNCTION__, __LINE__)
+#define ASRT_LOG_INFO(fmt, ...) \
+    asrt::SrtLog::log(asrt::LogLevel::Notice, "Reactor", __FILE__, __FUNCTION__, __LINE__, fmt, ##__VA_ARGS__)
 
-#define ASRT_LOG_WARNING(msg) \
-    asrt::SrtLog::log(asrt::LogLevel::Warning, "Reactor", msg, __FILE__, __FUNCTION__, __LINE__)
+#define ASRT_LOG_WARNING(fmt, ...) \
+    asrt::SrtLog::log(asrt::LogLevel::Warning, "Reactor", __FILE__, __FUNCTION__, __LINE__, fmt, ##__VA_ARGS__)
 
-#define ASRT_LOG_ERROR(msg) \
-    asrt::SrtLog::log(asrt::LogLevel::Error, "Reactor", msg, __FILE__, __FUNCTION__, __LINE__)
+#define ASRT_LOG_ERROR(fmt, ...) \
+    asrt::SrtLog::log(asrt::LogLevel::Error, "Reactor", __FILE__, __FUNCTION__, __LINE__, fmt, ##__VA_ARGS__)

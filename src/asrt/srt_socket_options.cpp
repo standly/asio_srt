@@ -1,6 +1,5 @@
 // srt_socket_options_v2.cpp - 基于 SRT 官方实现的增强选项管理
 #include "srt_socket_options.hpp"
-#include <sstream>
 #include <algorithm>
 #include <cstring>
 
@@ -239,7 +238,7 @@ SrtSocketOptions::SrtSocketOptions(const std::map<std::string, std::string>& opt
 bool SrtSocketOptions::set_option(const std::string& option_str) {
     size_t pos = option_str.find('=');
     if (pos == std::string::npos) {
-        ASRT_LOG_ERROR("Invalid option format (expected key=value): " + option_str);
+        ASRT_LOG_ERROR("Invalid option format (expected key=value): {}", option_str);
         return false;
     }
     
@@ -258,10 +257,10 @@ bool SrtSocketOptions::set_option(const std::string& option_str) {
             linger_val_ = std::stoi(value);
             linger_set_ = true;
             options_[key] = value;
-            ASRT_LOG_DEBUG("Set linger option: " + value);
+            ASRT_LOG_DEBUG("Set linger option: {}", value);
             return true;
         } catch (...) {
-            ASRT_LOG_ERROR("Invalid linger value: " + value);
+            ASRT_LOG_ERROR("Invalid linger value: {}", value);
             return false;
         }
     }
@@ -269,15 +268,13 @@ bool SrtSocketOptions::set_option(const std::string& option_str) {
     // 检查选项是否有效
     const auto& all_opts = get_all_options();
     if (all_opts.find(key) == all_opts.end()) {
-        ASRT_LOG_WARNING("Unknown SRT option: " + key);
+        ASRT_LOG_WARNING("Unknown SRT option: {}", key);
         // 仍然保存，可能是新版本的选项
     }
     
     options_[key] = value;
     
-    std::ostringstream oss;
-    oss << "Set option: " << key << " = " << value;
-    ASRT_LOG_DEBUG(oss.str());
+    ASRT_LOG_DEBUG("Set option: {} = {}", key, value);
     
     return true;
 }
@@ -314,13 +311,9 @@ std::vector<std::string> SrtSocketOptions::apply_pre(SRTSOCKET sock) const {
         if (it != options_.end()) {
             if (!opt.apply(sock, it->second)) {
                 failures.push_back(opt.name);
-                std::ostringstream oss;
-                oss << "Failed to set option " << opt.name << " = " << it->second;
-                ASRT_LOG_ERROR(oss.str());
+                ASRT_LOG_ERROR("Failed to set option {} = {}", opt.name, it->second);
             } else {
-                std::ostringstream oss;
-                oss << "Applied pre option: " << opt.name << " = " << it->second;
-                ASRT_LOG_DEBUG(oss.str());
+                ASRT_LOG_DEBUG("Applied pre option: {} = {}", opt.name, it->second);
             }
         }
     }
@@ -338,13 +331,9 @@ std::vector<std::string> SrtSocketOptions::apply_post(SRTSOCKET sock) const {
         if (it != options_.end()) {
             if (!opt.apply(sock, it->second)) {
                 failures.push_back(opt.name);
-                std::ostringstream oss;
-                oss << "Failed to set option " << opt.name << " = " << it->second;
-                ASRT_LOG_ERROR(oss.str());
+                ASRT_LOG_ERROR("Failed to set option {} = {}", opt.name, it->second);
             } else {
-                std::ostringstream oss;
-                oss << "Applied post option: " << opt.name << " = " << it->second;
-                ASRT_LOG_DEBUG(oss.str());
+                ASRT_LOG_DEBUG("Applied post option: {} = {}", opt.name, it->second);
             }
         }
     }
@@ -367,9 +356,9 @@ std::vector<std::string> SrtSocketOptions::apply_post(SRTSOCKET sock) const {
             
             if (!opt.apply(sock, it->second)) {
                 failures.push_back(name);
-                ASRT_LOG_ERROR("Failed to set " + name + " option");
+                ASRT_LOG_ERROR("Failed to set {} option", name);
             } else {
-                ASRT_LOG_DEBUG("Applied runtime option: " + name + " = " + it->second);
+                ASRT_LOG_DEBUG("Applied runtime option: {} = {}", name, it->second);
             }
         }
     }
