@@ -1,5 +1,6 @@
 
 add_subdirectory(asrt)
+add_subdirectory(bcast)
 
 # TODO: Implement main function in asrt_entry.cpp
 # add_executable(asrt_test
