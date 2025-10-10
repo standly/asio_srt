@@ -77,7 +77,7 @@ public:
             return;
         }
 
-        auto message = fmt::format(fmt_str, std::forward<Args>(args)...);
+        auto message = fmt::format(fmt::runtime(fmt_str), std::forward<Args>(args)...);
         auto& callback = get_callback_ref();
         if (callback && area && std::string(area) == "Reactor") {
             // Reactor日志，直接调用用户回调，保留function信息
