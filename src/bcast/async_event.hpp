@@ -1,93 +1,194 @@
 //
-// Created by ubuntu on 10/10/25.
+// Async Event (Manual-Reset Event) - 参考 async_semaphore 重写
 //
 #pragma once
 
 #include <asio.hpp>
-#include <iostream>
-#include <vector>
-#include <coroutine>
+#include <deque>
+#include <memory>
+#include <atomic>
 #include <chrono>
-#include <future> // 用于 asio::use_future
 
-using timer_type = asio::steady_timer;
+namespace bcast {
 
-// ------------------------------------
-// 1. 异步事件 (Async Manual-Reset Event)
-// ------------------------------------
+/**
+ * @brief 异步事件（手动重置事件）
+ * 
+ * 特性：
+ * 1. notify_all() 唤醒所有等待者（广播）
+ * 2. 支持手动 reset()
+ * 3. 线程安全（使用 strand）
+ * 4. 支持超时等待
+ * 
+ * 适用场景：
+ * - 事件广播（如：连接状态变化）
+ * - 多个订阅者需要同时响应
+ * - 状态同步
+ */
 class async_event {
 private:
     using executor_type = asio::any_io_executor;
 
-    // 使用 strand 保证对共享状态 (waiters_, is_set_) 的串行访问
     asio::strand<executor_type> strand_;
-
-    // 等待队列，存储协程句柄和对应的取消信号槽 (用于超时取消)
-    struct waiter_info {
-        std::coroutine_handle<> handle;
-        // 存储取消槽，用于在事件触发时断开连接，避免已恢复协程的slot被访问
-        asio::cancellation_slot slot;
+    
+    // 类型擦除的 handler 接口（参考 async_semaphore）
+    struct handler_base {
+        virtual ~handler_base() = default;
+        virtual void invoke() = 0;
     };
-    std::vector<waiter_info> waiters_;
-    std::atomic<bool> is_set_{false};  // 修复：使用原子变量避免数据竞争
-
-    // 内部类：实现 co_await 逻辑
-    struct awaiter {
-        async_event& event_;
-
-        bool await_ready() const noexcept {
-            return event_.is_set_.load(std::memory_order_acquire);
+    
+    template<typename Handler>
+    struct handler_impl : handler_base {
+        Handler handler_;
+        explicit handler_impl(Handler&& h) : handler_(std::move(h)) {}
+        void invoke() override {
+            std::move(handler_)();
         }
-
-        bool await_suspend(std::coroutine_handle<> h) noexcept {
-            // 修复：使用 bool 返回值避免双重恢复
-            // 获取当前协程的取消槽
-            asio::cancellation_slot slot = asio::get_associated_cancellation_slot(h);
-
-            // 在 strand 上安全地将协程加入等待队列
-            asio::post(event_.strand_, [this, h, slot]() mutable {
-                // 在协程等待的过程中，如果事件已经触发，则立即恢复协程
-                if (event_.is_set_.load(std::memory_order_acquire)) {
-                    asio::post(event_.strand_.get_inner_executor(), h);
-                } else {
-                    // 否则，将协程句柄和取消槽加入队列
-                    event_.waiters_.push_back({h, slot});
-                }
-            });
-            return true;  // 总是挂起，让 strand 决定何时恢复
-        }
-
-        void await_resume() const noexcept {}
     };
+    
+    // 超时 handler 接口（带bool参数）
+    struct timeout_handler_base {
+        virtual ~timeout_handler_base() = default;
+        virtual void invoke(bool result) = 0;
+    };
+    
+    template<typename Handler>
+    struct timeout_handler_impl : timeout_handler_base {
+        Handler handler_;
+        explicit timeout_handler_impl(Handler&& h) : handler_(std::move(h)) {}
+        void invoke(bool result) override {
+            std::move(handler_)(result);
+        }
+    };
+    
+    std::deque<std::unique_ptr<handler_base>> waiters_;
+    std::atomic<bool> is_set_{false};
 
 public:
-    explicit async_event(executor_type ex) : strand_(asio::make_strand(ex)) {}
+    explicit async_event(executor_type ex) 
+        : strand_(asio::make_strand(ex)) 
+    {}
 
-    // 协程等待事件触发的接口
-    [[nodiscard]] awaiter wait() noexcept {
-        return awaiter{*this};
+    /**
+     * @brief 等待事件触发
+     * 
+     * 用法：co_await event.wait(use_awaitable);
+     */
+    template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
+    auto wait(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
+        return asio::async_initiate<CompletionToken, void()>(
+            [this](auto handler) {
+                asio::post(strand_, [this, handler = std::move(handler)]() mutable {
+                    if (is_set_.load(std::memory_order_acquire)) {
+                        // 事件已触发，立即完成
+                        std::move(handler)();
+                    } else {
+                        // 事件未触发，加入等待队列
+                        waiters_.push_back(
+                            std::make_unique<handler_impl<decltype(handler)>>(std::move(handler))
+                        );
+                    }
+                });
+            },
+            token
+        );
     }
 
     /**
-     * @brief 触发事件并唤醒所有等待的协程。线程安全。
+     * @brief 带超时的等待
+     * 
+     * 用法：bool triggered = co_await event.wait_for(5s, use_awaitable);
+     * 
+     * @return true - 事件在超时前触发
+     *         false - 等待超时
+     */
+    template<typename Rep, typename Period, typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
+    auto wait_for(
+        std::chrono::duration<Rep, Period> timeout,
+        CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{})
+    {
+        return asio::async_initiate<CompletionToken, void(bool)>(
+            [this, timeout](auto handler) {
+                // 完成标志：确保 handler 只被调用一次
+                auto completed = std::make_shared<std::atomic<bool>>(false);
+                auto timer = std::make_shared<asio::steady_timer>(strand_.get_inner_executor());
+                
+                // 将 handler 类型擦除并存储在 shared_ptr 中，两个路径共享
+                auto handler_ptr = std::make_shared<std::unique_ptr<timeout_handler_base>>(
+                    std::make_unique<timeout_handler_impl<decltype(handler)>>(std::move(handler))
+                );
+                
+                // 超时定时器
+                timer->expires_after(timeout);
+                timer->async_wait([completed, handler_ptr](const std::error_code& ec) mutable {
+                    if (!ec && !completed->exchange(true, std::memory_order_acq_rel)) {
+                        // 超时触发
+                        if (*handler_ptr) {
+                            auto h = std::move(*handler_ptr);
+                            h->invoke(false);
+                        }
+                    }
+                });
+                
+                // 事件等待
+                asio::post(strand_, [this, completed, timer, handler_ptr]() mutable {
+                    if (is_set_.load(std::memory_order_acquire)) {
+                        // 事件已触发
+                        if (!completed->exchange(true, std::memory_order_acq_rel)) {
+                            timer->cancel();
+                            if (*handler_ptr) {
+                                auto h = std::move(*handler_ptr);
+                                h->invoke(true);
+                            }
+                        }
+                    } else {
+                        // 加入等待队列
+                        auto wrapper = [completed, timer, handler_ptr]() mutable {
+                            if (!completed->exchange(true, std::memory_order_acq_rel)) {
+                                timer->cancel();
+                                if (*handler_ptr) {
+                                    auto h = std::move(*handler_ptr);
+                                    h->invoke(true);
+                                }
+                            }
+                        };
+                        waiters_.push_back(
+                            std::make_unique<handler_impl<decltype(wrapper)>>(std::move(wrapper))
+                        );
+                    }
+                });
+            },
+            token
+        );
+    }
+
+    /**
+     * @brief 触发事件并唤醒所有等待者
+     * 
+     * 注意：这是广播操作，所有等待者都会被唤醒
+     * 这是异步操作，函数会立即返回
      */
     void notify_all() {
         asio::post(strand_, [this]() {
-            if (is_set_.load(std::memory_order_acquire)) return;
+            if (is_set_.load(std::memory_order_acquire)) {
+                return;  // 已经触发，避免重复
+            }
+            
             is_set_.store(true, std::memory_order_release);
 
-            // 唤醒所有等待的协程
-            auto executor = strand_.get_inner_executor();
-            for (auto& w : waiters_) {
-                // post(h) 异步恢复协程
-                asio::post(executor, w.handle);
+            // 唤醒所有等待者
+            while (!waiters_.empty()) {
+                auto handler = std::move(waiters_.front());
+                waiters_.pop_front();
+                handler->invoke();
             }
-            waiters_.clear();
         });
     }
 
     /**
-     * @brief 重置事件状态为未触发。线程安全。
+     * @brief 重置事件状态为未触发
+     * 
+     * 注意：这是异步操作，函数会立即返回
      */
     void reset() {
         asio::post(strand_, [this]() {
@@ -95,123 +196,33 @@ public:
         });
     }
 
-    // 暴露执行器，供外部函数（如定时器）使用
+    /**
+     * @brief 检查事件是否已触发
+     * 
+     * 注意：由于并发性，返回的值可能立即过时
+     */
+    bool is_set() const noexcept {
+        return is_set_.load(std::memory_order_acquire);
+    }
+
+    /**
+     * @brief 获取等待者数量
+     */
+    template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
+    auto waiting_count(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
+        return asio::async_initiate<CompletionToken, void(size_t)>(
+            [this](auto handler) {
+                asio::post(strand_, [this, handler = std::move(handler)]() mutable {
+                    std::move(handler)(waiters_.size());
+                });
+            },
+            token
+        );
+    }
+
     executor_type get_executor() const noexcept {
         return strand_.get_inner_executor();
     }
 };
 
-// ------------------------------------
-// 2. 带超时的等待函数
-// ------------------------------------
-
-/**
- * @brief 异步等待事件，并支持超时。
- * @return asio::awaitable<bool> 返回一个 awaitable，其结果为 bool:
- * true  - 事件在超时前触发。
- * false - 等待超时。
- */
-template <typename Rep, typename Period>
-asio::awaitable<bool> wait_for(
-    async_event& event,
-    std::chrono::duration<Rep, Period> duration)
-{
-    // 1. 创建用于取消事件等待的信号源
-    asio::cancellation_signal cancel_signal;
-
-    // 2. 启动事件的异步等待操作，并获取 std::future
-    // 我们将 cancel_signal 的 slot 绑定到此协程的执行上下文中
-    auto event_wait_future = asio::co_spawn(
-        event.get_executor(),
-        [&event]() -> asio::awaitable<void> {
-            // 协程在此处等待事件触发
-            co_await event.wait();
-        },
-        // 传递一个 completion token，将 cancellation_slot 绑定到 future 的执行上下文
-        asio::bind_cancellation_slot(cancel_signal.slot(), asio::use_future)
-    );
-
-    // 3. 启动定时器
-    timer_type timer(event.get_executor());
-    timer.expires_after(duration);
-
-    // 异步等待定时器
-    timer.async_wait(
-        // 定时器到期回调
-        [&cancel_signal](const boost::system::error_code& ec) {
-            // 只有在没有被取消的情况下（即定时器真的到期了）才发送取消信号
-            if (ec != asio::error::operation_aborted) {
-                // 发送取消信号，这将中断 event_wait_future 对应的协程
-                cancel_signal.emit(asio::cancellation_type::terminal);
-            }
-        }
-    );
-
-    // 4. 等待 future 完成（事件触发或被取消）
-    try {
-        co_await asio::async_wait(
-            std::move(event_wait_future),
-            asio::use_awaitable
-        );
-
-        // 如果到达这里，说明 event_wait_future 正常完成 (事件已触发)
-        // 此时，我们需要取消定时器，避免它在未来触发
-        timer.cancel();
-        co_return true;
-
-    } catch (const boost::system::system_error& e) {
-        // 如果捕获到 operation_aborted，说明是被定时器取消了 (超时)
-        if (e.code() == asio::error::operation_aborted) {
-            co_return false; // 超时
-        }
-        throw; // 抛出其他非预期的错误
-    }
-}
-//
-// // ------------------------------------
-// // 3. 示例用法 (演示超时情况)
-// // ------------------------------------
-// using namespace std::literals::chrono_literals;
-//
-// asio::awaitable<void> consumer_with_timeout(int id, async_event& event) {
-//     std::cout << "[Consumer " << id << "] 启动，等待事件 (超时 1.5 秒)...\n";
-//
-//     // 调用带超时的等待函数
-//     bool triggered = co_await wait_for(event, 1500ms);
-//
-//     if (triggered) {
-//         std::cout << "[Consumer " << id << "] **事件已接收！** 恢复执行。\n";
-//     } else {
-//         std::cout << "[Consumer " << id << "] **超时了！** 事件未在 1.5 秒内触发。\n";
-//     }
-// }
-//
-// asio::awaitable<void> producer_delayed(async_event& event, asio::steady_timer& timer) {
-//     // 延迟 3 秒，确保消费者超时
-//     std::cout << "[Producer] 启动，等待 3 秒后触发事件...\n";
-//     timer.expires_after(3s);
-//     co_await timer.async_wait(asio::use_awaitable);
-//
-//     std::cout << "[Producer] **时间到，触发事件 (notify_all) !**\n";
-//     event.notify_all();
-// }
-//
-// int main() {
-//     try {
-//         asio::io_context ioc;
-//
-//         async_event event(ioc.get_executor());
-//         asio::steady_timer timer(ioc);
-//
-//         asio::co_spawn(ioc, consumer_with_timeout(1, event), asio::detached);
-//         asio::co_spawn(ioc, producer_delayed(event, timer), asio::detached);
-//
-//         std::cout << "--- 启动 Asio 事件循环 ---\n";
-//         ioc.run();
-//         std::cout << "--- Asio 事件循环结束 ---\n";
-//
-//     } catch (const std::exception& e) {
-//         std::cerr << "Exception: " << e.what() << "\n";
-//     }
-//     return 0;
-// }
+} // namespace bcast
