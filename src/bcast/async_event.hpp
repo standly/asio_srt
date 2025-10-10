@@ -1,6 +1,8 @@
 //
 // Created by ubuntu on 10/10/25.
 //
+#pragma once
+
 #include <asio.hpp>
 #include <iostream>
 #include <vector>
@@ -27,30 +29,32 @@ private:
         asio::cancellation_slot slot;
     };
     std::vector<waiter_info> waiters_;
-    bool is_set_ = false;
+    std::atomic<bool> is_set_{false};  // 修复：使用原子变量避免数据竞争
 
     // 内部类：实现 co_await 逻辑
     struct awaiter {
         async_event& event_;
 
         bool await_ready() const noexcept {
-            return event_.is_set_;
+            return event_.is_set_.load(std::memory_order_acquire);
         }
 
-        void await_suspend(std::coroutine_handle<> h) noexcept {
+        bool await_suspend(std::coroutine_handle<> h) noexcept {
+            // 修复：使用 bool 返回值避免双重恢复
             // 获取当前协程的取消槽
             asio::cancellation_slot slot = asio::get_associated_cancellation_slot(h);
 
             // 在 strand 上安全地将协程加入等待队列
             asio::post(event_.strand_, [this, h, slot]() mutable {
                 // 在协程等待的过程中，如果事件已经触发，则立即恢复协程
-                if (event_.is_set_) {
-                    asio::post(h); // 异步恢复协程
+                if (event_.is_set_.load(std::memory_order_acquire)) {
+                    asio::post(event_.strand_.get_inner_executor(), h);
                 } else {
                     // 否则，将协程句柄和取消槽加入队列
                     event_.waiters_.push_back({h, slot});
                 }
             });
+            return true;  // 总是挂起，让 strand 决定何时恢复
         }
 
         void await_resume() const noexcept {}
@@ -69,13 +73,14 @@ public:
      */
     void notify_all() {
         asio::post(strand_, [this]() {
-            if (is_set_) return;
-            is_set_ = true;
+            if (is_set_.load(std::memory_order_acquire)) return;
+            is_set_.store(true, std::memory_order_release);
 
             // 唤醒所有等待的协程
+            auto executor = strand_.get_inner_executor();
             for (auto& w : waiters_) {
                 // post(h) 异步恢复协程
-                asio::post(w.handle);
+                asio::post(executor, w.handle);
             }
             waiters_.clear();
         });
@@ -86,7 +91,7 @@ public:
      */
     void reset() {
         asio::post(strand_, [this]() {
-            is_set_ = false;
+            is_set_.store(false, std::memory_order_release);
         });
     }
 
