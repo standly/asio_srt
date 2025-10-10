@@ -71,8 +71,22 @@ public:
     // 记录日志（从 Reactor 代码调用）
     static void log(LogLevel level, const char* area, const std::string& message,
                    const char* file = "", const char* function = "", int line = 0) {
-        // 直接调用处理器（注意：SRT的log_handler不支持function参数）
-        log_handler(nullptr, static_cast<int>(level), file, line, area, message.c_str());
+        // 由于SRT的log_handler不支持function参数，我们需要单独处理
+        // 如果是Reactor的日志且有用户回调，直接调用用户回调
+        
+        // 级别过滤
+        if (static_cast<int>(level) > static_cast<int>(get_level_ref())) {
+            return;
+        }
+        
+        auto& callback = get_callback_ref();
+        if (callback && area && std::string(area) == "Reactor") {
+            // Reactor日志，直接调用用户回调，保留function信息
+            callback(level, area, message.c_str(), file, function, line);
+        } else {
+            // SRT库日志或无用户回调，使用标准处理器
+            log_handler(nullptr, static_cast<int>(level), file, line, area, message.c_str());
+        }
     }
 
 private:
@@ -93,6 +107,7 @@ private:
         auto& callback = get_callback_ref();
         if (callback) {
             // 用户自定义回调
+            // 注意：对于SRT库的日志，function参数为空
             callback(log_level, area, message, file, "", line);
         } else {
             // 默认输出到 stderr

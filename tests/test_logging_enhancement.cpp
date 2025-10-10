@@ -8,6 +8,7 @@
 #include <regex>
 #include <thread>
 #include <chrono>
+#include <mutex>
 
 using namespace asrt;
 using namespace std::chrono_literals;
@@ -25,15 +26,20 @@ struct LogEntry {
 class LoggingEnhancementTest : public ::testing::Test {
 protected:
     std::vector<LogEntry> captured_logs;
+    std::mutex captured_logs_mutex;
     
     void SetUp() override {
         // 清空日志
-        captured_logs.clear();
+        {
+            std::lock_guard<std::mutex> lock(captured_logs_mutex);
+            captured_logs.clear();
+        }
         
         // 设置自定义日志回调
         SrtReactor::set_log_callback(
             [this](LogLevel level, const char* area, const char* message,
                    const char* file, const char* function, int line) {
+                std::lock_guard<std::mutex> lock(captured_logs_mutex);
                 captured_logs.push_back({
                     level, 
                     area ? area : "", 
@@ -62,6 +68,7 @@ protected:
     
     // 帮助函数：查找包含特定消息的日志
     std::vector<LogEntry> findLogsWithMessage(const std::string& msg) {
+        std::lock_guard<std::mutex> lock(captured_logs_mutex);
         std::vector<LogEntry> result;
         for (const auto& log : captured_logs) {
             if (log.message.find(msg) != std::string::npos) {
@@ -84,31 +91,37 @@ TEST_F(LoggingEnhancementTest, LogContainsFileInfo) {
     std::this_thread::sleep_for(100ms);
     
     // 验证至少有一些日志被捕获
-    ASSERT_GT(captured_logs.size(), 0) << "应该捕获到一些日志";
+    {
+        std::lock_guard<std::mutex> lock(captured_logs_mutex);
+        ASSERT_GT(captured_logs.size(), 0) << "应该捕获到一些日志";
+    }
     
     // 检查是否有包含文件信息的日志
     bool found_with_file_info = false;
-    for (const auto& log : captured_logs) {
-        if (hasFileInfo(log)) {
-            found_with_file_info = true;
-            
-            // 验证文件名格式
-            EXPECT_TRUE(log.file.find(".cpp") != std::string::npos || 
-                       log.file.find(".hpp") != std::string::npos)
-                << "文件名应该是.cpp或.hpp文件: " << log.file;
-            
-            // 验证函数名不为空
-            EXPECT_FALSE(log.function.empty()) 
-                << "函数名不应该为空";
-            
-            // 验证行号合理
-            EXPECT_GT(log.line, 0) 
-                << "行号应该大于0";
-            
-            std::cout << "日志示例 - 文件: " << log.file 
-                     << ", 函数: " << log.function 
-                     << ", 行: " << log.line 
-                     << ", 消息: " << log.message << std::endl;
+    {
+        std::lock_guard<std::mutex> lock(captured_logs_mutex);
+        for (const auto& log : captured_logs) {
+            if (hasFileInfo(log)) {
+                found_with_file_info = true;
+                
+                // 验证文件名格式
+                EXPECT_TRUE(log.file.find(".cpp") != std::string::npos || 
+                           log.file.find(".hpp") != std::string::npos)
+                    << "文件名应该是.cpp或.hpp文件: " << log.file;
+                
+                // 验证函数名不为空
+                EXPECT_FALSE(log.function.empty()) 
+                    << "函数名不应该为空";
+                
+                // 验证行号合理
+                EXPECT_GT(log.line, 0) 
+                    << "行号应该大于0";
+                
+                std::cout << "日志示例 - 文件: " << log.file 
+                         << ", 函数: " << log.function 
+                         << ", 行: " << log.line 
+                         << ", 消息: " << log.message << std::endl;
+            }
         }
     }
     
@@ -131,9 +144,12 @@ TEST_F(LoggingEnhancementTest, DifferentLogLevelsWithFileInfo) {
     
     // 检查不同级别的日志
     std::map<LogLevel, int> level_counts;
-    for (const auto& log : captured_logs) {
-        if (hasFileInfo(log)) {
-            level_counts[log.level]++;
+    {
+        std::lock_guard<std::mutex> lock(captured_logs_mutex);
+        for (const auto& log : captured_logs) {
+            if (hasFileInfo(log)) {
+                level_counts[log.level]++;
+            }
         }
     }
     
@@ -160,17 +176,20 @@ TEST_F(LoggingEnhancementTest, CustomAreaLogs) {
     
     // 查找Reactor区域的日志
     int reactor_logs = 0;
-    for (const auto& log : captured_logs) {
-        if (log.area == "Reactor" && hasFileInfo(log)) {
-            reactor_logs++;
-            
-            // 验证这些日志来自测试文件
-            EXPECT_TRUE(log.file.find("test_logging_enhancement.cpp") != std::string::npos)
-                << "日志应该来自测试文件，实际: " << log.file;
-            
-            // 验证函数名
-            EXPECT_TRUE(log.function.find("CustomAreaLogs") != std::string::npos)
-                << "函数名应该包含测试函数名，实际: " << log.function;
+    {
+        std::lock_guard<std::mutex> lock(captured_logs_mutex);
+        for (const auto& log : captured_logs) {
+            if (log.area == "Reactor" && hasFileInfo(log)) {
+                reactor_logs++;
+                
+                // 验证这些日志来自测试文件
+                EXPECT_TRUE(log.file.find("test_logging_enhancement.cpp") != std::string::npos)
+                    << "日志应该来自测试文件，实际: " << log.file;
+                
+                // 验证函数名（在Google Test中，函数名会是TestBody）
+                EXPECT_TRUE(log.function == "TestBody" || log.function.find("CustomAreaLogs") != std::string::npos)
+                    << "函数名应该是TestBody或包含测试函数名，实际: " << log.function;
+            }
         }
     }
     
@@ -273,21 +292,24 @@ TEST_F(LoggingEnhancementTest, ConcurrentLogging) {
     
     // 验证所有日志都被记录
     int concurrent_logs = 0;
-    for (const auto& log : captured_logs) {
-        if (log.message.find("线程") != std::string::npos && 
-            hasFileInfo(log)) {
-            concurrent_logs++;
+    {
+        std::lock_guard<std::mutex> lock(captured_logs_mutex);
+        for (const auto& log : captured_logs) {
+            if (log.message.find("线程") != std::string::npos && 
+                hasFileInfo(log)) {
+                concurrent_logs++;
+            }
         }
-    }
-    
-    EXPECT_EQ(concurrent_logs, num_threads * logs_per_thread)
-        << "应该记录所有并发日志";
-    
-    // 验证所有日志都有完整的文件信息
-    for (const auto& log : captured_logs) {
-        if (log.message.find("线程") != std::string::npos) {
-            EXPECT_TRUE(hasFileInfo(log))
-                << "并发日志应该包含文件信息";
+        
+        EXPECT_EQ(concurrent_logs, num_threads * logs_per_thread)
+            << "应该记录所有并发日志";
+        
+        // 验证所有日志都有完整的文件信息
+        for (const auto& log : captured_logs) {
+            if (log.message.find("线程") != std::string::npos) {
+                EXPECT_TRUE(hasFileInfo(log))
+                    << "并发日志应该包含文件信息";
+            }
         }
     }
 }
@@ -317,16 +339,19 @@ TEST_F(LoggingEnhancementTest, SrtLibraryLogs) {
     
     // 查找SRT库的日志
     int srt_logs = 0;
-    for (const auto& log : captured_logs) {
-        if (log.area != "Reactor") {  // 非Reactor区域的日志可能来自SRT库
-            srt_logs++;
-            std::cout << "SRT库日志 - 区域: " << log.area 
-                     << ", 消息: " << log.message;
-            if (hasFileInfo(log)) {
-                std::cout << ", 文件: " << log.file 
-                         << ":" << log.line;
+    {
+        std::lock_guard<std::mutex> lock(captured_logs_mutex);
+        for (const auto& log : captured_logs) {
+            if (log.area != "Reactor") {  // 非Reactor区域的日志可能来自SRT库
+                srt_logs++;
+                std::cout << "SRT库日志 - 区域: " << log.area 
+                         << ", 消息: " << log.message;
+                if (hasFileInfo(log)) {
+                    std::cout << ", 文件: " << log.file 
+                             << ":" << log.line;
+                }
+                std::cout << std::endl;
             }
-            std::cout << std::endl;
         }
     }
     

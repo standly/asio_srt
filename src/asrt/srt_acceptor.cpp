@@ -149,25 +149,19 @@ int SrtAcceptor::srt_listen_callback_fn(void* opaq, SRTSOCKET ns, int hsversion,
             ASRT_LOG_INFO("Connection rejected from " + peer_addr);
         }
         
-        // 释放临时 socket 的所有权（不关闭）
-        // 需要通过友元访问私有成员
-        temp_socket.close();  // 先正常关闭
-        temp_socket.sock_ = ns;  // 恢复 socket
-        temp_socket.sock_ = SRT_INVALID_SOCK;  // 释放所有权
+        // 释放临时 socket 的所有权（不关闭实际的socket）
+        // 通过友元访问私有成员
+        temp_socket.sock_ = SRT_INVALID_SOCK;  // 只是释放所有权，不关闭socket
         
         return result;
     } catch (const std::exception& e) {
         ASRT_LOG_ERROR("Exception in listener callback: " + std::string(e.what()));
         // 释放临时 socket 的所有权
-        temp_socket.close();
-        temp_socket.sock_ = ns;
         temp_socket.sock_ = SRT_INVALID_SOCK;
         return -1;  // 拒绝连接
     } catch (...) {
         ASRT_LOG_ERROR("Unknown exception in listener callback");
         // 释放临时 socket 的所有权
-        temp_socket.close();
-        temp_socket.sock_ = ns;
         temp_socket.sock_ = SRT_INVALID_SOCK;
         return -1;  // 拒绝连接
     }
