@@ -1,230 +1,139 @@
 //
-// Created by ubuntu on 10/10/25.
+// Simplified async_queue using async_semaphore
 //
-
 #pragma once
 
+#include "async_semaphore.hpp"
 #include <asio.hpp>
-#include <asio/experimental/awaitable_operators.hpp>
-#include <asio/steady_timer.hpp>
 #include <deque>
-#include <optional>
 #include <memory>
-#include <iostream>
+#include <vector>
 #include <chrono>
 
 namespace bcast {
 
 /**
- * @brief Asynchronous queue with coroutine support using ASIO strand
+ * @brief 简化版异步队列 - 使用 async_semaphore 实现
  * 
- * This queue uses strand to serialize all operations, making it thread-safe
- * without explicit locks. Supports both callback and coroutine interfaces.
+ * 相比原版 async_queue 的优势：
+ * 1. 不需要 pending_handler_ 机制
+ * 2. 不需要 handler_base 类型擦除（semaphore 内部已处理）
+ * 3. 代码更简洁，逻辑更清晰
+ * 4. 自动支持多个等待者（semaphore 内部管理）
  * 
- * @tparam T Message type
+ * 核心思想：
+ * - semaphore 的计数 = 队列中的消息数量
+ * - push() → release() 增加计数
+ * - read() → acquire() 等待计数 > 0
  */
 template <typename T>
 class async_queue : public std::enable_shared_from_this<async_queue<T>> {
 public:
-    /**
-     * @brief Construct async queue
-     * @param io_context ASIO io_context for async operations
-     */
     explicit async_queue(asio::io_context& io_context)
         : io_context_(io_context)
-        , strand_(asio::make_strand(io_context))
+        , strand_(asio::make_strand(io_context.get_executor()))
+        , semaphore_(io_context.get_executor(), 0)  // 初始计数为 0
         , stopped_(false)
-    {
-    }
+    {}
 
     /**
-     * @brief Push message to queue
-     * @param msg Message to enqueue
+     * @brief 推送消息到队列
      * 
-     * Thread-safe: can be called from any thread
+     * 简化：不需要检查 pending_handler，semaphore 会自动唤醒等待者
      */
     void push(T msg) {
         asio::post(strand_, [self = this->shared_from_this(), msg = std::move(msg)]() mutable {
-            if (self->stopped_) {
-                return;
-            }
+            if (self->stopped_) return;
             
             self->queue_.push_back(std::move(msg));
-            
-            // If there's a pending read operation, complete it
-            if (self->pending_handler_) {
-                T message = std::move(self->queue_.front());
-                self->queue_.pop_front();
-                
-                auto handler = std::move(self->pending_handler_);
-                handler->invoke(std::error_code{}, std::move(message));
-            }
+            self->semaphore_.release();  // 唤醒一个等待者
         });
     }
 
     /**
-     * @brief Push multiple messages to queue (batch operation)
-     * @param messages Vector of messages to enqueue
+     * @brief 批量推送
      * 
-     * Thread-safe: can be called from any thread
-     * More efficient than calling push() multiple times.
-     * 
-     * Usage: 
-     *   std::vector<Message> batch = {msg1, msg2, msg3};
-     *   queue->push_batch(batch);
+     * 简化：直接批量 release
      */
     void push_batch(std::vector<T> messages) {
-        if (messages.empty()) {
-            return;
-        }
+        if (messages.empty()) return;
         
-        asio::post(strand_, [self = this->shared_from_this(), messages = std::move(messages)]() mutable {
-            if (self->stopped_) {
-                return;
-            }
+        size_t count = messages.size();
+        asio::post(strand_, [self = this->shared_from_this(), 
+                             messages = std::move(messages), count]() mutable {
+            if (self->stopped_) return;
             
-            // Add all messages to queue
             for (auto& msg : messages) {
                 self->queue_.push_back(std::move(msg));
             }
-            
-            // If there's a pending read operation, complete it with first message
-            if (self->pending_handler_ && !self->queue_.empty()) {
-                T message = std::move(self->queue_.front());
-                self->queue_.pop_front();
-                
-                auto handler = std::move(self->pending_handler_);
-                handler->invoke(std::error_code{}, std::move(message));
-            }
+            self->semaphore_.release(count);  // 批量唤醒
         });
     }
 
     /**
-     * @brief Push multiple messages to queue using iterators
-     * @param begin Iterator to first message
-     * @param end Iterator past last message
+     * @brief 异步读取一条消息
      * 
-     * Thread-safe: can be called from any thread
-     * 
-     * Usage:
-     *   std::vector<Message> msgs = {msg1, msg2, msg3};
-     *   queue->push_batch(msgs.begin(), msgs.end());
-     *   
-     *   std::array<Message, 3> arr = {msg1, msg2, msg3};
-     *   queue->push_batch(arr.begin(), arr.end());
+     * 简化：先 acquire semaphore，再从队列取消息
      */
-    template<typename Iterator>
-    void push_batch(Iterator begin, Iterator end) {
-        if (begin == end) {
-            return;
-        }
-        
-        // Convert to vector for efficient move
-        std::vector<T> messages(
-            std::make_move_iterator(begin),
-            std::make_move_iterator(end)
-        );
-        
-        push_batch(std::move(messages));
-    }
-
-    /**
-     * @brief Push multiple messages from initializer list
-     * @param init_list Initializer list of messages
-     * 
-     * Thread-safe: can be called from any thread
-     * 
-     * Usage:
-     *   queue->push_batch({msg1, msg2, msg3});
-     */
-    void push_batch(std::initializer_list<T> init_list) {
-        if (init_list.size() == 0) {
-            return;
-        }
-        
-        std::vector<T> messages(init_list);
-        push_batch(std::move(messages));
-    }
-
-    /**
-     * @brief Asynchronously read one message from queue (coroutine interface)
-     * @return awaitable<T> Message read from queue
-     * 
-     * Usage: auto msg = co_await queue->async_read_msg();
-     */
-    template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>>
-    auto async_read_msg(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>{}) {
+    template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
+    auto async_read_msg(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
         return asio::async_initiate<CompletionToken, void(std::error_code, T)>(
             [self = this->shared_from_this()](auto handler) mutable {
-                asio::post(self->strand_, [self, handler = std::move(handler)]() mutable {
-                    if (self->stopped_) {
-                        asio::post(asio::bind_executor(
-                            self->strand_,
-                            [handler = std::move(handler)]() mutable {
+                // 先等待 semaphore（确保有消息）
+                self->semaphore_.acquire(
+                    [self, handler = std::move(handler)](auto...) mutable {
+                        // semaphore 已获取，从队列取消息
+                        asio::post(self->strand_, [self, handler = std::move(handler)]() mutable {
+                            if (self->stopped_ || self->queue_.empty()) {
                                 handler(std::make_error_code(std::errc::operation_canceled), T{});
+                                return;
                             }
-                        ));
-                        return;
+                            
+                            T msg = std::move(self->queue_.front());
+                            self->queue_.pop_front();
+                            handler(std::error_code{}, std::move(msg));
+                        });
                     }
-                    
-                    // If message available, return immediately
-                    if (!self->queue_.empty()) {
-                        T msg = std::move(self->queue_.front());
-                        self->queue_.pop_front();
-                        
-                        asio::post(asio::bind_executor(
-                            self->strand_,
-                            [handler = std::move(handler), msg = std::move(msg)]() mutable {
-                                handler(std::error_code{}, std::move(msg));
-                            }
-                        ));
-                    } else {
-                        // Queue empty, save handler for later
-                        self->pending_handler_ = std::make_unique<handler_impl<decltype(handler)>>(std::move(handler));
-                    }
-                });
+                );
             },
             token
         );
     }
 
     /**
-     * @brief Asynchronously read multiple messages (up to max_count)
-     * @param max_count Maximum number of messages to read
-     * @return awaitable<std::vector<T>> Messages read from queue
+     * @brief 异步读取多条消息
      * 
-     * Usage: auto msgs = co_await queue->async_read_msgs(10);
+     * 简化：批量 acquire
      */
-    template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>>
-    auto async_read_msgs(size_t max_count, CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>{}) {
+    template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
+    auto async_read_msgs(size_t max_count, CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
         return asio::async_initiate<CompletionToken, void(std::error_code, std::vector<T>)>(
             [self = this->shared_from_this(), max_count](auto handler) mutable {
                 asio::post(self->strand_, [self, max_count, handler = std::move(handler)]() mutable {
                     if (self->stopped_) {
-                        asio::post(asio::bind_executor(
-                            self->strand_,
-                            [handler = std::move(handler)]() mutable {
-                                handler(std::make_error_code(std::errc::operation_canceled), std::vector<T>{});
-                            }
-                        ));
+                        handler(std::make_error_code(std::errc::operation_canceled), std::vector<T>{});
                         return;
                     }
                     
+                    // 批量读取（非阻塞，尽可能多）
                     std::vector<T> messages;
-                    size_t count = std::min(max_count, self->queue_.size());
-                    messages.reserve(count);
+                    messages.reserve(std::min(max_count, self->queue_.size()));
                     
-                    for (size_t i = 0; i < count; ++i) {
-                        messages.push_back(std::move(self->queue_.front()));
-                        self->queue_.pop_front();
+                    for (size_t i = 0; i < max_count && !self->queue_.empty(); ++i) {
+                        // 尝试获取 semaphore
+                        bool acquired = self->semaphore_.try_acquire(
+                            [](bool success) { /* 同步版本，立即返回 */ }
+                        );
+                        
+                        if (acquired && !self->queue_.empty()) {
+                            messages.push_back(std::move(self->queue_.front()));
+                            self->queue_.pop_front();
+                        } else {
+                            break;
+                        }
                     }
                     
-                    asio::post(asio::bind_executor(
-                        self->strand_,
-                        [handler = std::move(handler), messages = std::move(messages)]() mutable {
-                            handler(std::error_code{}, std::move(messages));
-                        }
-                    ));
+                    handler(std::error_code{}, std::move(messages));
                 });
             },
             token
@@ -232,60 +141,47 @@ public:
     }
 
     /**
-     * @brief Asynchronously read one message with timeout
-     * @param timeout Timeout duration
-     * @return awaitable<T> Message read from queue
+     * @brief 带超时的读取（支持取消）
      * 
-     * Usage: auto [ec, msg] = co_await queue->async_read_msg_with_timeout(5s, use_awaitable);
-     * Returns asio::error::timed_out if timeout occurs.
+     * 使用 acquire_cancellable() 来支持超时时取消等待
      */
-    template<typename Duration, typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>>
-    auto async_read_msg_with_timeout(Duration timeout, CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>{}) {
+    template<typename Duration, typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
+    auto async_read_msg_with_timeout(Duration timeout, CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
         return asio::async_initiate<CompletionToken, void(std::error_code, T)>(
             [self = this->shared_from_this(), timeout](auto handler) mutable {
                 auto timer = std::make_shared<asio::steady_timer>(self->io_context_);
-                auto handler_ptr = std::make_shared<decltype(handler)>(std::move(handler));
                 auto completed = std::make_shared<std::atomic<bool>>(false);
+                auto waiter_id = std::make_shared<uint64_t>(0);
                 
-                // Helper: complete operation once
-                auto complete_once = [handler_ptr, completed](std::error_code ec, T msg) {
-                    if (!completed->exchange(true)) {
-                        (*handler_ptr)(ec, std::move(msg));
+                // 可取消的 acquire
+                *waiter_id = self->semaphore_.acquire_cancellable(
+                    [self, completed, timer, handler, waiter_id]() mutable {
+                        if (completed->exchange(true)) {
+                            return;  // 已超时
+                        }
+                        
+                        timer->cancel();
+                        
+                        asio::post(self->strand_, [self, handler = std::move(handler)]() mutable {
+                            if (self->stopped_ || self->queue_.empty()) {
+                                handler(std::make_error_code(std::errc::operation_canceled), T{});
+                                return;
+                            }
+                            
+                            T msg = std::move(self->queue_.front());
+                            self->queue_.pop_front();
+                            handler(std::error_code{}, std::move(msg));
+                        });
                     }
-                };
+                );
                 
-                // Set up timeout
+                // 启动超时定时器
                 timer->expires_after(timeout);
-                timer->async_wait([self, complete_once, timer](std::error_code ec) mutable {
-                    if (ec == asio::error::operation_aborted) return;
-                    
-                    asio::post(self->strand_, [self, complete_once]() mutable {
-                        self->pending_handler_.reset();
-                        complete_once(asio::error::timed_out, T{});
-                    });
-                });
-                
-                // Try to read message immediately
-                asio::post(self->strand_, [self, timer, complete_once]() mutable {
-                    if (self->stopped_) {
-                        timer->cancel();
-                        complete_once(std::make_error_code(std::errc::operation_canceled), T{});
-                        return;
-                    }
-                    
-                    if (!self->queue_.empty()) {
-                        // Message available - return immediately
-                        T msg = std::move(self->queue_.front());
-                        self->queue_.pop_front();
-                        timer->cancel();
-                        complete_once(std::error_code{}, std::move(msg));
-                    } else {
-                        // Queue empty - wait for message or timeout
-                        auto wrapper_handler = [timer, complete_once](std::error_code ec, T msg) mutable {
-                            timer->cancel();
-                            complete_once(ec, std::move(msg));
-                        };
-                        self->pending_handler_ = std::make_unique<handler_impl<decltype(wrapper_handler)>>(std::move(wrapper_handler));
+                timer->async_wait([self, completed, handler, waiter_id](const std::error_code& ec) mutable {
+                    if (!ec && !completed->exchange(true)) {
+                        // 超时：取消 semaphore 等待
+                        self->semaphore_.cancel(*waiter_id);
+                        handler(std::make_error_code(std::errc::timed_out), T{});
                     }
                 });
             },
@@ -294,127 +190,35 @@ public:
     }
 
     /**
-     * @brief Asynchronously read multiple messages with timeout
-     * @param max_count Maximum number of messages to read
-     * @param timeout Timeout duration
-     * @return awaitable<std::vector<T>> Messages read from queue
+     * @brief 停止队列
      * 
-     * Usage: auto [ec, msgs] = co_await queue->async_read_msgs_with_timeout(10, 5s, use_awaitable);
-     * Returns asio::error::timed_out if timeout occurs and no messages are available.
-     * If timeout occurs but some messages are available, returns those messages without error.
-     */
-    template<typename Duration, typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>>
-    auto async_read_msgs_with_timeout(size_t max_count, Duration timeout, CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::io_context::executor_type>>{}) {
-        return asio::async_initiate<CompletionToken, void(std::error_code, std::vector<T>)>(
-            [self = this->shared_from_this(), max_count, timeout](auto handler) mutable {
-                auto timer = std::make_shared<asio::steady_timer>(self->io_context_);
-                auto handler_ptr = std::make_shared<decltype(handler)>(std::move(handler));
-                auto completed = std::make_shared<std::atomic<bool>>(false);
-                
-                // Helper: read messages from queue
-                auto read_messages = [self, max_count]() -> std::vector<T> {
-                    std::vector<T> messages;
-                    size_t count = std::min(max_count, self->queue_.size());
-                    messages.reserve(count);
-                    for (size_t i = 0; i < count; ++i) {
-                        messages.push_back(std::move(self->queue_.front()));
-                        self->queue_.pop_front();
-                    }
-                    return messages;
-                };
-                
-                // Helper: complete operation once
-                auto complete_once = [handler_ptr, completed](std::error_code ec, std::vector<T> msgs) {
-                    if (!completed->exchange(true)) {
-                        (*handler_ptr)(ec, std::move(msgs));
-                    }
-                };
-                
-                // Set up timeout
-                timer->expires_after(timeout);
-                timer->async_wait([self, complete_once, read_messages, timer](std::error_code ec) mutable {
-                    if (ec == asio::error::operation_aborted) return;
-                    
-                    asio::post(self->strand_, [self, complete_once, read_messages]() mutable {
-                        auto messages = read_messages();
-                        auto result_ec = messages.empty() ? asio::error::timed_out : std::error_code{};
-                        complete_once(result_ec, std::move(messages));
-                    });
-                });
-                
-                // Try to read immediately
-                asio::post(self->strand_, [self, timer, complete_once, read_messages]() mutable {
-                    if (self->stopped_) {
-                        timer->cancel();
-                        complete_once(std::make_error_code(std::errc::operation_canceled), std::vector<T>{});
-                        return;
-                    }
-                    
-                    if (!self->queue_.empty()) {
-                        timer->cancel();
-                        auto messages = read_messages();
-                        complete_once(std::error_code{}, std::move(messages));
-                    }
-                    // Otherwise, wait for timeout
-                });
-            },
-            token
-        );
-    }
-
-    /**
-     * @brief Stop the queue from processing more messages
+     * 取消所有等待的读操作
      */
     void stop() {
         asio::post(strand_, [self = this->shared_from_this()]() {
             self->stopped_ = true;
             self->queue_.clear();
             
-            // Cancel pending operations
-            if (self->pending_handler_) {
-                auto handler = std::move(self->pending_handler_);
-                handler->invoke(std::make_error_code(std::errc::operation_canceled), T{});
-            }
+            // 取消所有等待者
+            self->semaphore_.cancel_all();
         });
     }
 
-    /**
-     * @brief Check if queue is stopped
-     */
-    bool is_stopped() const {
-        return stopped_;
-    }
+    bool is_stopped() const { return stopped_; }
 
-    /**
-     * @brief Get current queue size (synchronous, use carefully)
-     */
     size_t size() const {
+        // 注意：这是近似值，因为是异步的
         return queue_.size();
     }
 
 private:
-    // Handler wrapper interface for type erasure
-    struct handler_base {
-        virtual ~handler_base() = default;
-        virtual void invoke(std::error_code ec, T msg) = 0;
-    };
-    
-    template<typename Handler>
-    struct handler_impl : handler_base {
-        Handler handler_;
-        explicit handler_impl(Handler&& h) : handler_(std::move(h)) {}
-        void invoke(std::error_code ec, T msg) override {
-            handler_(ec, std::move(msg));
-        }
-    };
-    
     asio::io_context& io_context_;
-    asio::strand<asio::io_context::executor_type> strand_;
+    asio::strand<asio::any_io_executor> strand_;
+    async_semaphore semaphore_;  // ← 核心：用 semaphore 替代 pending_handler
     std::deque<T> queue_;
-    bool stopped_;
-    
-    // Pending async read handler (using unique_ptr for move-only handlers)
-    std::unique_ptr<handler_base> pending_handler_;
+    std::atomic<bool> stopped_;
 };
 
 } // namespace bcast
+
+
