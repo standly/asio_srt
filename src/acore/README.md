@@ -80,6 +80,66 @@ queue->push(message);
 queue->push_batch({msg1, msg2, msg3});  // 批量推送
 ```
 
+### async_waitgroup - 异步等待组
+
+类似 Go 的 `sync.WaitGroup`，用于等待一组异步任务完成。
+
+```cpp
+auto wg = std::make_shared<bcast::async_waitgroup>(io_context.get_executor());
+
+// 启动 3 个异步任务
+wg->add(3);
+for (int i = 0; i < 3; ++i) {
+    asio::co_spawn(io_context, [wg, i]() -> asio::awaitable<void> {
+        co_await do_async_work(i);
+        wg->done();  // 完成一个任务
+    }, asio::detached);
+}
+
+// 等待所有任务完成
+co_await wg->wait(asio::use_awaitable);
+std::cout << "所有任务完成！\n";
+
+// 支持超时等待
+bool completed = co_await wg->wait_for(30s, asio::use_awaitable);
+```
+
+**详细文档**: 见 [WAITGROUP_USAGE.md](WAITGROUP_USAGE.md)
+
+### async_semaphore - 异步信号量
+
+用于控制并发访问数量。
+
+```cpp
+auto sem = std::make_shared<bcast::async_semaphore>(ex, 3);  // 最多 3 个并发
+
+// 获取信号量
+co_await sem->acquire(asio::use_awaitable);
+// ... 使用资源 ...
+sem->release();  // 释放
+
+// 取消支持
+uint64_t id = sem->acquire_cancellable([](){ /* callback */ });
+sem->cancel(id);  // 取消等待
+```
+
+### async_event - 异步事件
+
+手动重置事件，用于广播通知。
+
+```cpp
+auto event = std::make_shared<bcast::async_event>(ex);
+
+// 等待事件触发
+co_await event->wait(asio::use_awaitable);
+
+// 触发事件（唤醒所有等待者）
+event->notify_all();
+
+// 重置事件
+event->reset();
+```
+
 ## 主要特性
 
 ### 1. 协程接口
@@ -190,12 +250,30 @@ Publish ─┼──> Queue 2 ──> 订阅者 2
 
 ## 适用场景
 
+### dispatcher + async_queue
 - 实时消息系统
 - 事件驱动架构
 - 微服务通信
 - WebSocket 广播
 - 日志聚合
 - 数据流处理
+
+### async_waitgroup
+- 等待多个异步任务完成
+- 优雅关闭服务器（等待请求处理完毕）
+- 批量操作协调（如批量下载、批量处理）
+- Worker Pool 生命周期管理
+- 分阶段任务流水线
+
+### async_semaphore
+- 限制并发数（如连接池、线程池）
+- 资源访问控制
+- 流量控制和背压
+
+### async_event
+- 状态变化通知
+- 多订阅者事件广播
+- 条件同步
 
 ## License
 

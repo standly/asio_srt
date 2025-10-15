@@ -5,6 +5,7 @@ add_library(bcast INTERFACE
         dispatcher.hpp
         async_event.hpp
         async_semaphore.hpp
+        async_waitgroup.hpp
 )
 
 target_include_directories(bcast INTERFACE
