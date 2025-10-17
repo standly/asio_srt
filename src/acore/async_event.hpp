@@ -61,7 +61,8 @@ private:
         }
     };
     
-    std::deque<std::unique_ptr<handler_base>> waiters_;
+    std::deque<std::unique_ptr<handler_base>> waiters_;  // 仅在 strand 内访问
+    // is_set_ 使用 atomic：允许 is_set() 方法无锁读取（虽然值可能过时）
     std::atomic<bool> is_set_{false};
 
 public:

@@ -84,9 +84,11 @@ private:
         }
     };
     
-    std::deque<std::unique_ptr<handler_base>> waiters_;
-    std::atomic<int64_t> count_{0};  // 使用 int64_t 支持负数检测
-    std::atomic<bool> closed_{false};  // 标记是否已关闭（用于防止误用）
+    std::deque<std::unique_ptr<handler_base>> waiters_;  // 仅在 strand 内访问
+    // count_ 使用 atomic：因为 add()/done() 是同步操作，会在多线程中调用
+    std::atomic<int64_t> count_{0};
+    // closed_ 使用 atomic：因为 is_closed() 和 add() 可能在多线程中调用
+    std::atomic<bool> closed_{false};
 
 public:
     /**
@@ -105,49 +107,52 @@ public:
     }
 
     /**
-     * @brief 增加计数器
+     * @brief 增加计数器（同步操作）
      * 
      * @param delta 增加的数量（可以为负数，但结果不能为负）
      * 
-     * 注意：这是异步操作，函数会立即返回
+     * 注意：计数的更新是立即同步的，但唤醒等待者是异步的
+     * 这与 Go 的 WaitGroup.Add() 行为一致
      * 
      * 典型用法：
      * - 在启动异步任务前调用 add(1)
      * - 可以批量添加：add(10)
+     * 
+     * @throws std::logic_error 如果计数变为负数或在关闭后调用
      */
     void add(int64_t delta = 1) {
         if (delta == 0) return;
         
-        asio::post(strand_, [this, delta, self = shared_from_this()]() {
-            if (closed_.load(std::memory_order_acquire)) {
-                // 注意：Go 的 WaitGroup 在计数归零后再 add 会 panic
-                // 这里我们只是忽略，或者可以抛出异常
-                return;
-            }
-            
-            int64_t old_count = count_.fetch_add(delta, std::memory_order_acq_rel);
-            int64_t new_count = old_count + delta;
-            
-            if (new_count < 0) {
-                // 错误：计数变为负数
-                count_.store(0, std::memory_order_release);
-                // 可以选择抛出异常或记录日志
-                return;
-            }
-            
-            // 如果计数归零，唤醒所有等待者
-            if (new_count == 0) {
+        if (closed_.load(std::memory_order_acquire)) {
+            // Go 的 WaitGroup 在计数归零后再 add 会 panic
+            // 我们抛出异常以保持一致性
+            throw std::logic_error("async_waitgroup: add() called after close()");
+        }
+        
+        // 同步更新计数（这是关键修复！）
+        int64_t old_count = count_.fetch_add(delta, std::memory_order_acq_rel);
+        int64_t new_count = old_count + delta;
+        
+        if (new_count < 0) {
+            // 错误：计数变为负数
+            count_.store(0, std::memory_order_release);
+            throw std::logic_error("async_waitgroup: negative counter (done() called too many times)");
+        }
+        
+        // 如果计数归零，异步唤醒所有等待者
+        if (new_count == 0) {
+            asio::post(strand_, [this, self = shared_from_this()]() {
                 notify_all_waiters();
-            }
-        });
+            });
+        }
     }
 
     /**
-     * @brief 减少计数器（等同于 add(-1)）
+     * @brief 减少计数器（等同于 add(-1)）（同步操作）
      * 
      * 这是最常用的方法：任务完成时调用
      * 
-     * 注意：这是异步操作，函数会立即返回
+     * 注意：计数的更新是立即同步的
      * 
      * 典型用法：
      * @code
@@ -156,6 +161,8 @@ public:
      *     // ... 做一些工作 ...
      * }, asio::detached);
      * @endcode
+     * 
+     * @throws std::logic_error 如果计数变为负数
      */
     void done() {
         add(-1);

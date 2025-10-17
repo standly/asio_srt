@@ -71,7 +71,7 @@ public:
         
         asio::post(strand_, [self = this->shared_from_this(), id, queue]() {
             self->subscribers_[id] = queue;
-            self->queue_to_id_[queue.get()] = id;
+            self->subscriber_count_.fetch_add(1, std::memory_order_relaxed);
         });
         
         return queue;
@@ -92,7 +92,7 @@ public:
         
         asio::post(strand_, [self = this->shared_from_this(), id, queue]() {
             self->subscribers_[id] = queue;
-            self->queue_to_id_[queue.get()] = id;
+            self->subscriber_count_.fetch_add(1, std::memory_order_relaxed);
         });
         
         // Start reading messages recursively
@@ -112,12 +112,8 @@ public:
             auto it = self->subscribers_.find(id);
             if (it != self->subscribers_.end()) {
                 it->second->stop();
-                
-                // Also remove from queue_to_id_ map
-                auto queue_ptr = it->second.get();
-                self->queue_to_id_.erase(queue_ptr);
-                
                 self->subscribers_.erase(it);
+                self->subscriber_count_.fetch_sub(1, std::memory_order_relaxed);
             }
         });
     }
@@ -127,18 +123,19 @@ public:
      * @param queue The queue returned from subscribe()
      * 
      * Thread-safe: can be called from any thread
+     * 
+     * Note: This method searches through all subscribers (O(n)).
+     * If you have the subscriber ID, use unsubscribe_by_id() instead (O(1)).
      */
     void unsubscribe(queue_ptr queue) {
         asio::post(strand_, [self = this->shared_from_this(), queue]() {
-            auto it = self->queue_to_id_.find(queue.get());
-            if (it != self->queue_to_id_.end()) {
-                uint64_t id = it->second;
-                self->queue_to_id_.erase(it);
-                
-                auto sub_it = self->subscribers_.find(id);
-                if (sub_it != self->subscribers_.end()) {
-                    sub_it->second->stop();
-                    self->subscribers_.erase(sub_it);
+            // Search for the queue in subscribers (O(n) but safer than raw pointer key)
+            for (auto it = self->subscribers_.begin(); it != self->subscribers_.end(); ++it) {
+                if (it->second == queue) {
+                    queue->stop();
+                    self->subscribers_.erase(it);
+                    self->subscriber_count_.fetch_sub(1, std::memory_order_relaxed);
+                    return;
                 }
             }
         });
@@ -251,6 +248,9 @@ public:
     /**
      * @brief Get subscriber count (async)
      * @param callback Callback with count (called on strand)
+     * 
+     * Thread-safe: This is the ONLY safe way to get subscriber count.
+     * The synchronous version has been removed due to data race.
      */
     void get_subscriber_count(std::function<void(size_t)> callback) {
         asio::post(strand_, [self = this->shared_from_this(), callback = std::move(callback)]() {
@@ -259,11 +259,13 @@ public:
     }
 
     /**
-     * @brief Get subscriber count (synchronous)
-     * Note: This is a snapshot and may be outdated immediately
+     * @brief Get approximate subscriber count (lockless)
+     * 
+     * WARNING: This uses atomic counter for lock-free read, but the value
+     * may be stale. Use get_subscriber_count() if you need precise value.
      */
-    size_t subscriber_count() const {
-        return subscribers_.size();
+    size_t approx_subscriber_count() const noexcept {
+        return subscriber_count_.load(std::memory_order_relaxed);
     }
 
     /**
@@ -277,7 +279,7 @@ public:
                 queue->stop();
             }
             self->subscribers_.clear();
-            self->queue_to_id_.clear();
+            self->subscriber_count_.store(0, std::memory_order_relaxed);
         });
     }
 
@@ -304,9 +306,11 @@ private:
 
     asio::strand<asio::io_context::executor_type> strand_;
     asio::io_context& io_context_;
-    std::unordered_map<uint64_t, queue_ptr> subscribers_;
-    std::unordered_map<async_queue<T>*, uint64_t> queue_to_id_;
+    std::unordered_map<uint64_t, queue_ptr> subscribers_;  // 仅在 strand 内访问
+    // next_id_ 使用 atomic：在 strand 外生成 ID，需要线程安全
     std::atomic<uint64_t> next_id_;
+    // subscriber_count_ 使用 atomic：允许 approx_subscriber_count() 无锁读取近似值
+    std::atomic<size_t> subscriber_count_{0};
 };
 
 /**

@@ -101,9 +101,10 @@ public:
     }
 
     /**
-     * @brief 异步读取多条消息
+     * @brief 异步读取多条消息（非阻塞）
      * 
-     * 简化：批量 acquire
+     * 从队列中读取最多 max_count 条消息，立即返回可用的消息
+     * 如果队列为空，返回空vector（不等待）
      */
     template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
     auto async_read_msgs(size_t max_count, CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
@@ -117,20 +118,14 @@ public:
                     
                     // 批量读取（非阻塞，尽可能多）
                     std::vector<T> messages;
-                    messages.reserve(std::min(max_count, self->queue_.size()));
+                    size_t available = std::min(max_count, self->queue_.size());
+                    messages.reserve(available);
                     
-                    for (size_t i = 0; i < max_count && !self->queue_.empty(); ++i) {
-                        // 尝试获取 semaphore
-                        bool acquired = self->semaphore_.try_acquire(
-                            [](bool success) { /* 同步版本，立即返回 */ }
-                        );
-                        
-                        if (acquired && !self->queue_.empty()) {
-                            messages.push_back(std::move(self->queue_.front()));
-                            self->queue_.pop_front();
-                        } else {
-                            break;
-                        }
+                    for (size_t i = 0; i < available; ++i) {
+                        messages.push_back(std::move(self->queue_.front()));
+                        self->queue_.pop_front();
+                        // 同步减少 semaphore 计数（我们已经在 strand 内）
+                        self->semaphore_.consume_one();
                     }
                     
                     handler(std::error_code{}, std::move(messages));
@@ -215,7 +210,8 @@ private:
     asio::io_context& io_context_;
     asio::strand<asio::any_io_executor> strand_;
     async_semaphore semaphore_;  // ← 核心：用 semaphore 替代 pending_handler
-    std::deque<T> queue_;
+    std::deque<T> queue_;  // 仅在 strand 内访问
+    // stopped_ 使用 atomic：允许 is_stopped() 方法无锁读取
     std::atomic<bool> stopped_;
 };
 

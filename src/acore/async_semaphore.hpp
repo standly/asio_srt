@@ -4,7 +4,8 @@
 #pragma once
 
 #include <asio.hpp>
-#include <deque>
+#include <list>
+#include <unordered_map>
 #include <coroutine>
 #include <atomic>
 #include <memory>
@@ -60,9 +61,14 @@ private:
         }
     };
     
-    std::deque<std::unique_ptr<handler_base>> waiters_;
-    std::atomic<size_t> count_;  // 使用原子变量，允许无锁读取
-    std::atomic<uint64_t> next_id_{1};  // 从 1 开始，0 表示无效/立即完成
+    // 使用 list 而不是 deque，因为 list 的 iterator 在其他元素插入/删除时不会失效
+    std::list<std::unique_ptr<handler_base>> waiters_;  // 仅在 strand 内访问
+    // ID 到 iterator 的映射，用于 O(1) 取消
+    std::unordered_map<uint64_t, std::list<std::unique_ptr<handler_base>>::iterator> waiter_map_;  // 仅在 strand 内访问
+    // count_ 使用 atomic：允许 count() 方法无锁读取（虽然值可能过时）
+    std::atomic<size_t> count_;
+    // next_id_ 使用 atomic：在 strand 外生成 ID，需要线程安全
+    std::atomic<uint64_t> next_id_{1};
 
 public:
     explicit async_semaphore(executor_type ex, size_t initial_count = 0) 
@@ -90,6 +96,10 @@ public:
                         waiters_.push_back(
                             std::make_unique<handler_impl<decltype(handler)>>(waiter_id, std::move(handler))
                         );
+                        // 添加到 map 以支持 O(1) 取消
+                        auto it = waiters_.end();
+                        --it;  // 指向刚添加的元素
+                        waiter_map_[waiter_id] = it;
                     }
                 });
             },
@@ -118,6 +128,10 @@ public:
                 waiters_.push_back(
                     std::make_unique<handler_impl<decltype(handler)>>(waiter_id, std::move(handler))
                 );
+                // 添加到 map 以支持 O(1) 取消
+                auto it = waiters_.end();
+                --it;  // 指向刚添加的元素
+                waiter_map_[waiter_id] = it;
             }
         });
         
@@ -137,7 +151,9 @@ public:
             if (!waiters_.empty()) {
                 // 有等待者，直接唤醒第一个（不增加计数）
                 auto handler = std::move(waiters_.front());
+                uint64_t waiter_id = handler->id_;
                 waiters_.pop_front();
+                waiter_map_.erase(waiter_id);  // 从 map 中移除
                 // 调用 handler（如果已取消，invoke() 不会做任何事）
                 handler->invoke();
             } else {
@@ -159,7 +175,9 @@ public:
             for (size_t i = 0; i < n; ++i) {
                 if (!waiters_.empty()) {
                     auto handler = std::move(waiters_.front());
+                    uint64_t waiter_id = handler->id_;
                     waiters_.pop_front();
+                    waiter_map_.erase(waiter_id);  // 从 map 中移除
                     handler->invoke();
                 } else {
                     count_.fetch_add(1, std::memory_order_release);
@@ -169,7 +187,7 @@ public:
     }
     
     /**
-     * @brief 取消指定的等待操作
+     * @brief 取消指定的等待操作（O(1) 时间复杂度）
      * 
      * @param waiter_id 由 acquire_cancellable() 返回的 ID
      * 
@@ -180,12 +198,11 @@ public:
         if (waiter_id == 0) return;  // 0 表示无效 ID
         
         asio::post(strand_, [this, waiter_id]() {
-            // 直接移除，不只是标记
-            for (auto it = waiters_.begin(); it != waiters_.end(); ++it) {
-                if ((*it)->id_ == waiter_id) {
-                    waiters_.erase(it);  // 立即移除，释放 handler
-                    return;
-                }
+            // O(1) 查找并移除
+            auto it = waiter_map_.find(waiter_id);
+            if (it != waiter_map_.end()) {
+                waiters_.erase(it->second);  // 立即移除，释放 handler
+                waiter_map_.erase(it);
             }
         });
     }
@@ -200,20 +217,41 @@ public:
     void cancel_all() {
         asio::post(strand_, [this]() {
             waiters_.clear();  // 直接清空，所有 handler 析构
+            waiter_map_.clear();  // 清空映射
         });
+    }
+    
+    /**
+     * @brief 同步减少计数（仅供内部使用，必须在 strand 内调用）
+     * 
+     * 这是一个低级操作，调用者必须确保：
+     * 1. 当前在 strand 执行上下文中
+     * 2. count_ > 0
+     * 
+     * 用于 async_queue 的批量读取优化
+     */
+    void consume_one() {
+        // 注意：这个方法假设调用者已经在 strand 内
+        // 不做 post，直接操作
+        if (count_.load(std::memory_order_acquire) > 0) {
+            count_.fetch_sub(1, std::memory_order_release);
+        }
     }
 
     /**
-     * @brief 尝试获取（非阻塞）
+     * @brief 异步尝试获取（非阻塞）
      * 
      * 返回一个 awaitable，结果为 bool：
      * - true: 成功获取
      * - false: 当前没有可用的计数
      * 
-     * 用法：bool success = co_await sem.try_acquire();
+     * 注意：这个方法是异步的，虽然不会等待 semaphore，
+     * 但仍需要 post 到 strand。命名为 async_try_acquire 以明确这一点。
+     * 
+     * 用法：bool success = co_await sem.async_try_acquire(use_awaitable);
      */
     template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
-    auto try_acquire(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
+    auto async_try_acquire(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
         return asio::async_initiate<CompletionToken, void(bool)>(
             [this](auto handler) {
                 asio::post(strand_, [this, handler = std::move(handler)]() mutable {
