@@ -4,8 +4,7 @@
 #pragma once
 
 #include <asio.hpp>
-#include <list>
-#include <unordered_map>
+#include <deque>
 #include <coroutine>
 #include <atomic>
 #include <memory>
@@ -61,10 +60,7 @@ private:
         }
     };
     
-    // 使用 list 而不是 deque，因为 list 的 iterator 在其他元素插入/删除时不会失效
-    std::list<std::unique_ptr<handler_base>> waiters_;  // 仅在 strand 内访问
-    // ID 到 iterator 的映射，用于 O(1) 取消
-    std::unordered_map<uint64_t, std::list<std::unique_ptr<handler_base>>::iterator> waiter_map_;  // 仅在 strand 内访问
+    std::deque<std::unique_ptr<handler_base>> waiters_;  // 仅在 strand 内访问
     // count_ 使用 atomic：允许 count() 方法无锁读取（虽然值可能过时）
     std::atomic<size_t> count_;
     // next_id_ 使用 atomic：在 strand 外生成 ID，需要线程安全
@@ -96,10 +92,6 @@ public:
                         waiters_.push_back(
                             std::make_unique<handler_impl<decltype(handler)>>(waiter_id, std::move(handler))
                         );
-                        // 添加到 map 以支持 O(1) 取消
-                        auto it = waiters_.end();
-                        --it;  // 指向刚添加的元素
-                        waiter_map_[waiter_id] = it;
                     }
                 });
             },
@@ -122,16 +114,11 @@ public:
                 // 有可用的计数，立即完成
                 count_.fetch_sub(1, std::memory_order_release);
                 std::move(handler)();
-                // 需要标记这个 waiter_id 已完成（从外部看就像取消了）
             } else {
                 // 没有计数，加入等待队列
                 waiters_.push_back(
                     std::make_unique<handler_impl<decltype(handler)>>(waiter_id, std::move(handler))
                 );
-                // 添加到 map 以支持 O(1) 取消
-                auto it = waiters_.end();
-                --it;  // 指向刚添加的元素
-                waiter_map_[waiter_id] = it;
             }
         });
         
@@ -151,9 +138,7 @@ public:
             if (!waiters_.empty()) {
                 // 有等待者，直接唤醒第一个（不增加计数）
                 auto handler = std::move(waiters_.front());
-                uint64_t waiter_id = handler->id_;
                 waiters_.pop_front();
-                waiter_map_.erase(waiter_id);  // 从 map 中移除
                 // 调用 handler（如果已取消，invoke() 不会做任何事）
                 handler->invoke();
             } else {
@@ -175,9 +160,7 @@ public:
             for (size_t i = 0; i < n; ++i) {
                 if (!waiters_.empty()) {
                     auto handler = std::move(waiters_.front());
-                    uint64_t waiter_id = handler->id_;
                     waiters_.pop_front();
-                    waiter_map_.erase(waiter_id);  // 从 map 中移除
                     handler->invoke();
                 } else {
                     count_.fetch_add(1, std::memory_order_release);
@@ -187,22 +170,27 @@ public:
     }
     
     /**
-     * @brief 取消指定的等待操作（O(1) 时间复杂度）
+     * @brief 取消指定的等待操作
      * 
      * @param waiter_id 由 acquire_cancellable() 返回的 ID
      * 
      * 注意：这是异步操作，函数会立即返回
-     * 直接从队列中移除等待者，立即释放资源
+     * 
+     * 时间复杂度: O(n) - 需要遍历队列查找。这是可接受的，因为：
+     * 1. cancel 操作通常很少发生（主要是超时场景）
+     * 2. 等待队列通常不会太长
+     * 3. 避免了为每个 waiter 维护额外的 map 的内存开销
      */
     void cancel(uint64_t waiter_id) {
         if (waiter_id == 0) return;  // 0 表示无效 ID
         
         asio::post(strand_, [this, waiter_id]() {
-            // O(1) 查找并移除
-            auto it = waiter_map_.find(waiter_id);
-            if (it != waiter_map_.end()) {
-                waiters_.erase(it->second);  // 立即移除，释放 handler
-                waiter_map_.erase(it);
+            // O(n) 查找并移除
+            for (auto it = waiters_.begin(); it != waiters_.end(); ++it) {
+                if ((*it)->id_ == waiter_id) {
+                    waiters_.erase(it);  // 立即移除，释放 handler
+                    return;
+                }
             }
         });
     }
@@ -217,27 +205,9 @@ public:
     void cancel_all() {
         asio::post(strand_, [this]() {
             waiters_.clear();  // 直接清空，所有 handler 析构
-            waiter_map_.clear();  // 清空映射
         });
     }
     
-    /**
-     * @brief 同步减少计数（仅供内部使用，必须在 strand 内调用）
-     * 
-     * 这是一个低级操作，调用者必须确保：
-     * 1. 当前在 strand 执行上下文中
-     * 2. count_ > 0
-     * 
-     * 用于 async_queue 的批量读取优化
-     */
-    void consume_one() {
-        // 注意：这个方法假设调用者已经在 strand 内
-        // 不做 post，直接操作
-        if (count_.load(std::memory_order_acquire) > 0) {
-            count_.fetch_sub(1, std::memory_order_release);
-        }
-    }
-
     /**
      * @brief 异步尝试获取（非阻塞）
      * 
@@ -266,6 +236,38 @@ public:
             },
             token
         );
+    }
+
+    /**
+     * @brief 批量尝试获取（非阻塞，在 strand 回调中执行）
+     * 
+     * 这是一个特殊的 API，用于高性能批量操作场景（如 async_queue 的批量读取）
+     * 
+     * @param max_count 最多尝试获取的数量
+     * @param callback 回调函数，在 strand 上下文中执行，接收实际获取的数量
+     * 
+     * 工作原理：
+     * 1. 在 strand 内执行
+     * 2. 尝试获取最多 max_count 个计数
+     * 3. 返回实际获取的数量
+     * 4. 调用者可以在同一个 strand 上下文中继续操作
+     * 
+     * 这个方法保证线程安全，因为所有操作都在 strand 内完成
+     */
+    template<typename Callback>
+    void async_try_acquire_n(size_t max_count, Callback&& callback) {
+        asio::post(strand_, [this, max_count, callback = std::forward<Callback>(callback)]() mutable {
+            size_t acquired = 0;
+            size_t available = count_.load(std::memory_order_acquire);
+            
+            if (available > 0) {
+                acquired = std::min(max_count, available);
+                count_.fetch_sub(acquired, std::memory_order_release);
+            }
+            
+            // 在 strand 上下文中调用回调，传递实际获取的数量
+            callback(acquired);
+        });
     }
 
     /**

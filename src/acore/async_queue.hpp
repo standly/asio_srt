@@ -101,35 +101,60 @@ public:
     }
 
     /**
-     * @brief 异步读取多条消息（非阻塞）
+     * @brief 异步读取多条消息（高性能批量读取）
      * 
-     * 从队列中读取最多 max_count 条消息，立即返回可用的消息
-     * 如果队列为空，返回空vector（不等待）
+     * 等待至少一条消息，然后尽可能多地读取最多 max_count 条消息
+     * 
+     * 工作原理：
+     * 1. 等待第一条消息（阻塞 acquire）
+     * 2. 尝试批量获取更多 semaphore 计数（非阻塞）
+     * 3. 批量读取队列中的消息
+     * 
+     * 性能特点：
+     * - 只有第一条消息需要等待
+     * - 后续消息批量读取，无额外等待
+     * - 线程安全：所有队列操作在 queue 的 strand 内完成
+     * 
+     * @param max_count 最多读取的消息数量
+     * @return vector<T> 实际读取的消息（至少1条，最多max_count条）
      */
     template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
     auto async_read_msgs(size_t max_count, CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
         return asio::async_initiate<CompletionToken, void(std::error_code, std::vector<T>)>(
             [self = this->shared_from_this(), max_count](auto handler) mutable {
-                asio::post(self->strand_, [self, max_count, handler = std::move(handler)]() mutable {
-                    if (self->stopped_) {
-                        handler(std::make_error_code(std::errc::operation_canceled), std::vector<T>{});
-                        return;
+                // 先获取第一个 semaphore 计数（等待第一条消息）
+                self->semaphore_.acquire(
+                    [self, max_count, handler = std::move(handler)](auto...) mutable {
+                        // 第一条消息已经保证存在
+                        // 现在尝试批量获取更多（在 semaphore 的 strand 内）
+                        self->semaphore_.async_try_acquire_n(
+                            max_count - 1,  // 已经获取了1个，再尝试获取 max_count-1 个
+                            [self, handler = std::move(handler)](size_t additional_acquired) mutable {
+                                // total = 1 (第一个) + additional_acquired
+                                size_t total = 1 + additional_acquired;
+                                
+                                // 切换到 queue 的 strand 来操作队列
+                                asio::post(self->strand_, [self, total, handler = std::move(handler)]() mutable {
+                                    if (self->stopped_) {
+                                        handler(std::make_error_code(std::errc::operation_canceled), std::vector<T>{});
+                                        return;
+                                    }
+                                    
+                                    // 批量读取消息
+                                    std::vector<T> messages;
+                                    messages.reserve(total);
+                                    
+                                    for (size_t i = 0; i < total && !self->queue_.empty(); ++i) {
+                                        messages.push_back(std::move(self->queue_.front()));
+                                        self->queue_.pop_front();
+                                    }
+                                    
+                                    handler(std::error_code{}, std::move(messages));
+                                });
+                            }
+                        );
                     }
-                    
-                    // 批量读取（非阻塞，尽可能多）
-                    std::vector<T> messages;
-                    size_t available = std::min(max_count, self->queue_.size());
-                    messages.reserve(available);
-                    
-                    for (size_t i = 0; i < available; ++i) {
-                        messages.push_back(std::move(self->queue_.front()));
-                        self->queue_.pop_front();
-                        // 同步减少 semaphore 计数（我们已经在 strand 内）
-                        self->semaphore_.consume_one();
-                    }
-                    
-                    handler(std::error_code{}, std::move(messages));
-                });
+                );
             },
             token
         );
@@ -177,6 +202,81 @@ public:
                         // 超时：取消 semaphore 等待
                         self->semaphore_.cancel(*waiter_id);
                         handler(std::make_error_code(std::errc::timed_out), T{});
+                    }
+                });
+            },
+            token
+        );
+    }
+
+    /**
+     * @brief 带超时的批量读取（支持取消）
+     * 
+     * 等待至少一条消息（带超时），然后尽可能多地读取最多 max_count 条消息
+     * 
+     * 工作原理：
+     * 1. 等待第一条消息（带超时，可取消）
+     * 2. 如果成功获取，批量获取更多（非阻塞）
+     * 3. 批量读取队列中的消息
+     * 
+     * @param max_count 最多读取的消息数量
+     * @param timeout 超时时长
+     * @return (error_code, vector<T>) - 如果超时，返回 errc::timed_out 和空 vector
+     */
+    template<typename Duration, typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
+    auto async_read_msgs_with_timeout(size_t max_count, Duration timeout, CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
+        return asio::async_initiate<CompletionToken, void(std::error_code, std::vector<T>)>(
+            [self = this->shared_from_this(), max_count, timeout](auto handler) mutable {
+                auto timer = std::make_shared<asio::steady_timer>(self->io_context_);
+                auto completed = std::make_shared<std::atomic<bool>>(false);
+                auto waiter_id = std::make_shared<uint64_t>(0);
+                
+                // 可取消的 acquire（等待第一条消息）
+                *waiter_id = self->semaphore_.acquire_cancellable(
+                    [self, max_count, completed, timer, handler, waiter_id]() mutable {
+                        if (completed->exchange(true)) {
+                            return;  // 已超时
+                        }
+                        
+                        timer->cancel();
+                        
+                        // 成功获取第一条消息，尝试批量获取更多
+                        self->semaphore_.async_try_acquire_n(
+                            max_count - 1,  // 已经获取了1个，再尝试获取 max_count-1 个
+                            [self, handler = std::move(handler)](size_t additional_acquired) mutable {
+                                // total = 1 (第一个) + additional_acquired
+                                size_t total = 1 + additional_acquired;
+                                
+                                // 切换到 queue 的 strand 来操作队列
+                                asio::post(self->strand_, [self, total, handler = std::move(handler)]() mutable {
+                                    if (self->stopped_) {
+                                        handler(std::make_error_code(std::errc::operation_canceled), std::vector<T>{});
+                                        return;
+                                    }
+                                    
+                                    // 批量读取消息
+                                    std::vector<T> messages;
+                                    messages.reserve(total);
+                                    
+                                    for (size_t i = 0; i < total && !self->queue_.empty(); ++i) {
+                                        messages.push_back(std::move(self->queue_.front()));
+                                        self->queue_.pop_front();
+                                    }
+                                    
+                                    handler(std::error_code{}, std::move(messages));
+                                });
+                            }
+                        );
+                    }
+                );
+                
+                // 启动超时定时器
+                timer->expires_after(timeout);
+                timer->async_wait([self, completed, handler, waiter_id](const std::error_code& ec) mutable {
+                    if (!ec && !completed->exchange(true)) {
+                        // 超时：取消 semaphore 等待
+                        self->semaphore_.cancel(*waiter_id);
+                        handler(std::make_error_code(std::errc::timed_out), std::vector<T>{});
                     }
                 });
             },

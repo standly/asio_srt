@@ -8,6 +8,7 @@
 #include <memory>
 #include <atomic>
 #include <stdexcept>
+#include <cassert>
 
 namespace bcast {
 
@@ -118,25 +119,29 @@ public:
      * - 在启动异步任务前调用 add(1)
      * - 可以批量添加：add(10)
      * 
-     * @throws std::logic_error 如果计数变为负数或在关闭后调用
+     * 错误处理：如果计数变为负数或在关闭后调用，会触发断言（debug）或静默恢复（release）
      */
     void add(int64_t delta = 1) {
         if (delta == 0) return;
         
-        if (closed_.load(std::memory_order_acquire)) {
-            // Go 的 WaitGroup 在计数归零后再 add 会 panic
-            // 我们抛出异常以保持一致性
-            throw std::logic_error("async_waitgroup: add() called after close()");
+        // 检查是否已关闭（在debug模式断言，release模式忽略）
+        bool is_closed = closed_.load(std::memory_order_acquire);
+        assert(!is_closed && "async_waitgroup: add() called after close()");
+        if (is_closed) {
+            return;  // release 模式下静默返回
         }
         
-        // 同步更新计数（这是关键修复！）
+        // 同步更新计数
         int64_t old_count = count_.fetch_add(delta, std::memory_order_acq_rel);
         int64_t new_count = old_count + delta;
         
         if (new_count < 0) {
-            // 错误：计数变为负数
+            // 错误：计数变为负数（done()调用次数超过add()）
+            // 恢复为0并断言
             count_.store(0, std::memory_order_release);
-            throw std::logic_error("async_waitgroup: negative counter (done() called too many times)");
+            assert(false && "async_waitgroup: negative counter (done() called too many times)");
+            // release模式下，继续执行，触发所有等待者
+            new_count = 0;
         }
         
         // 如果计数归零，异步唤醒所有等待者
@@ -161,8 +166,6 @@ public:
      *     // ... 做一些工作 ...
      * }, asio::detached);
      * @endcode
-     * 
-     * @throws std::logic_error 如果计数变为负数
      */
     void done() {
         add(-1);
