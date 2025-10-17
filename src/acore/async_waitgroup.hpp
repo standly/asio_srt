@@ -10,7 +10,7 @@
 #include <stdexcept>
 #include <cassert>
 
-namespace bcast {
+namespace acore {
 
 /**
  * @brief 异步等待组 - 类似 Go 的 sync.WaitGroup
@@ -344,5 +344,5 @@ private:
     }
 };
 
-} // namespace bcast
+} // namespace acore
 

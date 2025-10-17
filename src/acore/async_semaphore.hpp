@@ -9,7 +9,7 @@
 #include <atomic>
 #include <memory>
 
-namespace bcast {
+namespace acore {
 
 /**
  * @brief 异步信号量 - 每次 release 只唤醒一个等待者
@@ -301,4 +301,4 @@ public:
     }
 };
 
-} // namespace bcast
+} // namespace acore

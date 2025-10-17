@@ -41,7 +41,7 @@ if (completed) {
 ```cpp
 asio::awaitable<void> process_batch() {
     auto ex = co_await asio::this_coro::executor;
-    auto wg = std::make_shared<bcast::async_waitgroup>(ex);
+    auto wg = std::make_shared<acore::async_waitgroup>(ex);
     
     std::vector<std::string> urls = {"url1", "url2", "url3"};
     
@@ -99,7 +99,7 @@ asio::awaitable<void> pipeline() {
     auto ex = co_await asio::this_coro::executor;
     
     // 阶段 1: 数据获取
-    auto fetch_wg = std::make_shared<bcast::async_waitgroup>(ex);
+    auto fetch_wg = std::make_shared<acore::async_waitgroup>(ex);
     fetch_wg->add(3);
     
     std::vector<Data> results;
@@ -115,7 +115,7 @@ asio::awaitable<void> pipeline() {
     std::cout << "阶段 1 完成：数据获取\n";
     
     // 阶段 2: 数据处理
-    auto process_wg = std::make_shared<bcast::async_waitgroup>(ex);
+    auto process_wg = std::make_shared<acore::async_waitgroup>(ex);
     process_wg->add(results.size());
     
     for (const auto& data : results) {
@@ -141,7 +141,7 @@ class WorkerPool {
 public:
     WorkerPool(asio::io_context& io, int num_workers)
         : io_context_(io)
-        , workers_wg_(std::make_shared<bcast::async_waitgroup>(io.get_executor()))
+        , workers_wg_(std::make_shared<acore::async_waitgroup>(io.get_executor()))
     {
         // 启动 workers
         workers_wg_->add(num_workers);
@@ -180,7 +180,7 @@ public:
 ```cpp
 asio::awaitable<void> batch_operation_with_timeout() {
     auto ex = co_await asio::this_coro::executor;
-    auto wg = std::make_shared<bcast::async_waitgroup>(ex);
+    auto wg = std::make_shared<acore::async_waitgroup>(ex);
     
     wg->add(10);
     for (int i = 0; i < 10; ++i) {

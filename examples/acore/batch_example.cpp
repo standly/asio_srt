@@ -2,7 +2,7 @@
 // Batch operations example: Demonstrating efficient batch push and publish
 //
 
-#include "bcast/dispatcher.hpp"
+#include "acore/dispatcher.hpp"
 #include <asio.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/detached.hpp>
@@ -35,7 +35,7 @@ struct LogEntry {
 awaitable<void> example1_queue_batch_push(asio::io_context& io) {
     std::cout << "=== Example 1: Batch Push to Queue ===" << std::endl;
     
-    auto queue = std::make_shared<bcast::async_queue<int>>(io);
+    auto queue = std::make_shared<acore::async_queue<int>>(io);
     
     // Start a reader
     co_spawn(io, [queue]() -> awaitable<void> {
@@ -85,7 +85,7 @@ awaitable<void> example1_queue_batch_push(asio::io_context& io) {
 awaitable<void> example2_dispatcher_batch_publish(asio::io_context& io) {
     std::cout << "=== Example 2: Batch Publish to Subscribers ===" << std::endl;
     
-    auto dispatcher = bcast::make_dispatcher<LogEntry>(io);
+    auto dispatcher = acore::make_dispatcher<LogEntry>(io);
     
     // Create 3 subscribers
     auto queue1 = dispatcher->subscribe();
@@ -175,7 +175,7 @@ awaitable<void> example3_performance_comparison(asio::io_context& io) {
     
     // Test 1: Individual push
     {
-        auto queue = std::make_shared<bcast::async_queue<int>>(io);
+        auto queue = std::make_shared<acore::async_queue<int>>(io);
         
         auto start = std::chrono::high_resolution_clock::now();
         
@@ -192,7 +192,7 @@ awaitable<void> example3_performance_comparison(asio::io_context& io) {
     
     // Test 2: Batch push
     {
-        auto queue = std::make_shared<bcast::async_queue<int>>(io);
+        auto queue = std::make_shared<acore::async_queue<int>>(io);
         
         std::vector<int> batch;
         batch.reserve(NUM_MESSAGES);
@@ -227,7 +227,7 @@ awaitable<void> example4_bulk_data_processing(asio::io_context& io) {
         DataPoint(double v, int id) : value(v), sensor_id(id) {}
     };
     
-    auto dispatcher = bcast::make_dispatcher<DataPoint>(io);
+    auto dispatcher = acore::make_dispatcher<DataPoint>(io);
     
     // Analytics subscriber
     auto analytics_queue = dispatcher->subscribe();

@@ -6,36 +6,39 @@
 
 #include "async_queue.hpp"
 #include <asio.hpp>
-#include <asio/co_spawn.hpp>
-#include <asio/detached.hpp>
-#include <asio/use_awaitable.hpp>
 #include <memory>
 #include <unordered_map>
 #include <vector>
 #include <atomic>
-#include <functional>
 
-namespace bcast {
+namespace acore {
 
 /**
- * @brief Dispatcher for publish-subscribe pattern using ASIO strand
+ * @brief Dispatcher for publish-subscribe pattern using ASIO strand and C++20 coroutines
  * 
  * This dispatcher manages subscribers and broadcasts messages to them
  * in a thread-safe, lock-free manner using strand for serialization.
  * Each subscriber gets its own async_queue for message processing.
  * 
+ * Requires C++20 coroutines.
+ * 
  * Usage:
- *   auto disp = bcast::make_dispatcher<Message>(io_context);
- *   auto queue = disp->subscribe();  // Get a queue
- *   
- *   // In publisher:
- *   disp->publish(message);
- *   
- *   // In subscriber (coroutine):
- *   while (true) {
- *       auto msg = co_await queue->async_read_msg(asio::use_awaitable);
- *       process(msg);
- *   }
+ * @code
+ * auto disp = acore::make_dispatcher<Message>(io_context);
+ * auto queue = disp->subscribe();
+ * 
+ * // Subscriber coroutine
+ * co_spawn(ex, [queue]() -> awaitable<void> {
+ *     while (true) {
+ *         auto [ec, msg] = co_await queue->async_read_msg(use_awaitable);
+ *         if (ec) break;
+ *         process(msg);
+ *     }
+ * }, detached);
+ * 
+ * // Publisher
+ * disp->publish(message);
+ * @endcode
  * 
  * @tparam T Message type
  */
@@ -61,8 +64,19 @@ public:
      * 
      * Thread-safe: can be called from any thread.
      * 
-     * The returned queue can be used with:
-     * - co_await queue->async_read_msg(asio::use_awaitable)  // Read single message
+     * Usage with coroutines:
+     * @code
+     * auto queue = dispatcher->subscribe();
+     * co_spawn(ex, [queue]() -> awaitable<void> {
+     *     while (true) {
+     *         auto [ec, msg] = co_await queue->async_read_msg(use_awaitable);
+     *         if (ec) break;
+     *         process(msg);
+     *     }
+     * }, detached);
+     * @endcode
+     * 
+     * Batch reading:
      * - co_await queue->async_read_msgs(10, asio::use_awaitable)  // Read up to 10 messages
      */
     queue_ptr subscribe() {
@@ -78,58 +92,17 @@ public:
     }
 
     /**
-     * @brief Subscribe with a callback function (for backward compatibility)
-     * @param handler Callback function to process messages
-     * @return Subscriber ID that can be used with unsubscribe_by_id()
-     * 
-     * Thread-safe: can be called from any thread.
-     * 
-     * This method internally uses a recursive async read pattern to process messages.
-     */
-    uint64_t subscribe(std::function<void(const T&)> handler) {
-        auto queue = std::make_shared<async_queue<T>>(io_context_);
-        uint64_t id = next_id_.fetch_add(1, std::memory_order_relaxed);
-        
-        asio::post(strand_, [self = this->shared_from_this(), id, queue]() {
-            self->subscribers_[id] = queue;
-            self->subscriber_count_.fetch_add(1, std::memory_order_relaxed);
-        });
-        
-        // Start reading messages recursively
-        start_reading(queue, std::move(handler));
-        
-        return id;
-    }
-
-    /**
-     * @brief Unsubscribe by subscriber ID
-     * @param id The subscriber ID returned from subscribe(handler)
-     * 
-     * Thread-safe: can be called from any thread
-     */
-    void unsubscribe_by_id(uint64_t id) {
-        asio::post(strand_, [self = this->shared_from_this(), id]() {
-            auto it = self->subscribers_.find(id);
-            if (it != self->subscribers_.end()) {
-                it->second->stop();
-                self->subscribers_.erase(it);
-                self->subscriber_count_.fetch_sub(1, std::memory_order_relaxed);
-            }
-        });
-    }
-
-    /**
-     * @brief Unsubscribe a queue from receiving messages
+     * @brief Unsubscribe by queue pointer
      * @param queue The queue returned from subscribe()
      * 
      * Thread-safe: can be called from any thread
      * 
-     * Note: This method searches through all subscribers (O(n)).
-     * If you have the subscriber ID, use unsubscribe_by_id() instead (O(1)).
+     * Note: This searches through all subscribers (O(n)).
+     * Keep a reference to the queue to unsubscribe later.
      */
     void unsubscribe(queue_ptr queue) {
         asio::post(strand_, [self = this->shared_from_this(), queue]() {
-            // Search for the queue in subscribers (O(n) but safer than raw pointer key)
+            // Search for the queue in subscribers
             for (auto it = self->subscribers_.begin(); it != self->subscribers_.end(); ++it) {
                 if (it->second == queue) {
                     queue->stop();
@@ -140,6 +113,7 @@ public:
             }
         });
     }
+
 
     /**
      * @brief Publish message to all subscribers
@@ -284,26 +258,6 @@ public:
     }
 
 private:
-    /**
-     * @brief Helper method to recursively read messages from queue
-     */
-    void start_reading(queue_ptr queue, std::function<void(const T&)> handler) {
-        queue->async_read_msg(
-            [self = this->shared_from_this(), queue, handler](std::error_code ec, T msg) {
-                if (ec) {
-                    // Queue stopped, end the reading loop
-                    return;
-                }
-                
-                // Call user handler
-                handler(msg);
-                
-                // Continue reading
-                self->start_reading(queue, handler);
-            }
-        );
-    }
-
     asio::strand<asio::io_context::executor_type> strand_;
     asio::io_context& io_context_;
     std::unordered_map<uint64_t, queue_ptr> subscribers_;  // 仅在 strand 内访问
@@ -323,4 +277,4 @@ std::shared_ptr<dispatcher<T>> make_dispatcher(asio::io_context& io_context) {
     return std::make_shared<dispatcher<T>>(io_context);
 }
 
-} // namespace bcast
+} // namespace acore

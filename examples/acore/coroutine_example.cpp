@@ -3,7 +3,7 @@
 // Requires C++20 and ASIO with coroutine support
 //
 
-#include "bcast/dispatcher.hpp"
+#include "acore/dispatcher.hpp"
 #include <asio.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/detached.hpp>
@@ -30,7 +30,7 @@ struct Message {
 
 // Subscriber coroutine - reads messages in a loop
 awaitable<void> subscriber_task(
-    std::shared_ptr<bcast::async_queue<Message>> queue,
+    std::shared_ptr<acore::async_queue<Message>> queue,
     std::string name)
 {
     std::cout << "[" << name << "] Started" << std::endl;
@@ -57,7 +57,7 @@ awaitable<void> subscriber_task(
 
 // Batch subscriber - reads multiple messages at once
 awaitable<void> batch_subscriber_task(
-    std::shared_ptr<bcast::async_queue<Message>> queue,
+    std::shared_ptr<acore::async_queue<Message>> queue,
     std::string name)
 {
     std::cout << "[" << name << "] Started (batch mode)" << std::endl;
@@ -85,7 +85,7 @@ awaitable<void> batch_subscriber_task(
 }
 
 // Publisher coroutine
-awaitable<void> publisher_task(std::shared_ptr<bcast::dispatcher<Message>> disp)
+awaitable<void> publisher_task(std::shared_ptr<acore::dispatcher<Message>> disp)
 {
     std::cout << "[Publisher] Started" << std::endl;
     
@@ -107,7 +107,7 @@ awaitable<void> publisher_task(std::shared_ptr<bcast::dispatcher<Message>> disp)
 }
 
 // Main function demonstrating the simple API
-awaitable<void> async_main(std::shared_ptr<bcast::dispatcher<Message>> dispatcher)
+awaitable<void> async_main(std::shared_ptr<acore::dispatcher<Message>> dispatcher)
 {
     std::cout << "=== Coroutine Publish-Subscribe Example ===" << std::endl;
     std::cout << "Using co_await for simple async message reading" << std::endl << std::endl;
@@ -195,7 +195,7 @@ int main() {
         asio::io_context io_context;
         
         // Create dispatcher
-        auto dispatcher = bcast::make_dispatcher<Message>(io_context);
+        auto dispatcher = acore::make_dispatcher<Message>(io_context);
         
         // Demonstrate API comparison
         demonstrate_api_comparison(io_context);

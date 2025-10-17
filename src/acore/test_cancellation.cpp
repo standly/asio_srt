@@ -12,7 +12,7 @@ asio::awaitable<void> test_timeout_cancellation() {
     auto ex = co_await asio::this_coro::executor;
     auto& io_context = static_cast<asio::io_context&>(ex.context());
     
-    auto queue = std::make_shared<bcast::async_queue_v2<std::string>>(io_context);
+    auto queue = std::make_shared<acore::async_queue_v2<std::string>>(io_context);
     
     std::cout << "测试 1: 超时取消\n";
     std::cout << "等待消息，超时 2 秒...\n";
@@ -39,7 +39,7 @@ asio::awaitable<void> test_timeout_then_message() {
     auto ex = co_await asio::this_coro::executor;
     auto& io_context = static_cast<asio::io_context&>(ex.context());
     
-    auto queue = std::make_shared<bcast::async_queue_v2<std::string>>(io_context);
+    auto queue = std::make_shared<acore::async_queue_v2<std::string>>(io_context);
     
     std::cout << "测试 2: 超时后消息到达\n";
     
@@ -82,7 +82,7 @@ asio::awaitable<void> test_manual_cancellation() {
     auto ex = co_await asio::this_coro::executor;
     auto& io_context = static_cast<asio::io_context&>(ex.context());
     
-    auto sem = std::make_shared<bcast::async_semaphore>(ex, 0);
+    auto sem = std::make_shared<acore::async_semaphore>(ex, 0);
     
     std::cout << "测试 3: 手动取消\n";
     std::cout << "  → 启动可取消的 acquire...\n";
@@ -133,7 +133,7 @@ asio::awaitable<void> test_cancel_all() {
     auto ex = co_await asio::this_coro::executor;
     auto& io_context = static_cast<asio::io_context&>(ex.context());
     
-    auto queue = std::make_shared<bcast::async_queue_v2<std::string>>(io_context);
+    auto queue = std::make_shared<acore::async_queue_v2<std::string>>(io_context);
     
     std::cout << "测试 4: 取消所有等待者（stop）\n";
     

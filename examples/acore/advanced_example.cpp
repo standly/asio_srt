@@ -2,7 +2,7 @@
 // Advanced example: Multi-topic dispatcher with routing and filtering
 //
 
-#include "bcast/dispatcher.hpp"
+#include "acore/dispatcher.hpp"
 #include <asio.hpp>
 #include <iostream>
 #include <string>
@@ -31,7 +31,7 @@ class MultiTopicDispatcher {
 public:
     explicit MultiTopicDispatcher(asio::io_context& io_context)
         : io_context_(io_context)
-        , main_dispatcher_(bcast::make_dispatcher<TopicMessage>(io_context))
+        , main_dispatcher_(acore::make_dispatcher<TopicMessage>(io_context))
     {}
     
     // Subscribe to a specific topic
@@ -98,7 +98,7 @@ private:
     }
     
     asio::io_context& io_context_;
-    std::shared_ptr<bcast::dispatcher<TopicMessage>> main_dispatcher_;
+    std::shared_ptr<acore::dispatcher<TopicMessage>> main_dispatcher_;
     std::map<uint64_t, uint64_t> subscriptions_;
     uint64_t next_id_ = 1;
 };
@@ -119,9 +119,9 @@ public:
         : io_context_(io_context)
     {
         // Create separate dispatchers for different priority levels
-        high_priority_ = bcast::make_dispatcher<PriorityMessage>(io_context);
-        medium_priority_ = bcast::make_dispatcher<PriorityMessage>(io_context);
-        low_priority_ = bcast::make_dispatcher<PriorityMessage>(io_context);
+        high_priority_ = acore::make_dispatcher<PriorityMessage>(io_context);
+        medium_priority_ = acore::make_dispatcher<PriorityMessage>(io_context);
+        low_priority_ = acore::make_dispatcher<PriorityMessage>(io_context);
     }
     
     uint64_t subscribe_priority(int min_priority,
@@ -147,9 +147,9 @@ public:
     
 private:
     asio::io_context& io_context_;
-    std::shared_ptr<bcast::dispatcher<PriorityMessage>> high_priority_;
-    std::shared_ptr<bcast::dispatcher<PriorityMessage>> medium_priority_;
-    std::shared_ptr<bcast::dispatcher<PriorityMessage>> low_priority_;
+    std::shared_ptr<acore::dispatcher<PriorityMessage>> high_priority_;
+    std::shared_ptr<acore::dispatcher<PriorityMessage>> medium_priority_;
+    std::shared_ptr<acore::dispatcher<PriorityMessage>> low_priority_;
 };
 
 int main() {
@@ -244,7 +244,7 @@ int main() {
             std::cout << "Example 3: Message batching and aggregation" << std::endl;
             std::cout << "--------------------------------------------" << std::endl;
             
-            auto dispatcher = bcast::make_dispatcher<int>(io_context);
+            auto dispatcher = acore::make_dispatcher<int>(io_context);
             
             // Aggregating subscriber
             std::vector<int> batch;
@@ -280,10 +280,10 @@ int main() {
             std::cout << "--------------------------------" << std::endl;
             
             // Stage 1: Raw data dispatcher
-            auto stage1 = bcast::make_dispatcher<std::string>(io_context);
+            auto stage1 = acore::make_dispatcher<std::string>(io_context);
             
             // Stage 2: Processed data dispatcher
-            auto stage2 = bcast::make_dispatcher<std::string>(io_context);
+            auto stage2 = acore::make_dispatcher<std::string>(io_context);
             
             // Connect stage 1 to stage 2 with transformation
             stage1->subscribe([&stage2](const std::string& raw) {

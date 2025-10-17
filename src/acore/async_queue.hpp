@@ -10,7 +10,7 @@
 #include <vector>
 #include <chrono>
 
-namespace bcast {
+namespace acore {
 
 /**
  * @brief 简化版异步队列 - 使用 async_semaphore 实现
@@ -315,6 +315,6 @@ private:
     std::atomic<bool> stopped_;
 };
 
-} // namespace bcast
+} // namespace acore
 
 

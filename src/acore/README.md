@@ -1,4 +1,4 @@
-# BCAST - Asynchronous Publish-Subscribe Pattern
+# acore - Asynchronous Publish-Subscribe Pattern
 
 基于 ASIO strand 实现的异步、无锁发布订阅模式，支持 **C++20 协程**。
 
@@ -14,7 +14,7 @@
 ## 快速示例
 
 ```cpp
-#include "bcast/dispatcher.hpp"
+#include "acore/dispatcher.hpp"
 #include <asio.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/use_awaitable.hpp>
@@ -34,7 +34,7 @@ awaitable<void> subscriber(auto queue) {
 
 int main() {
     asio::io_context io;
-    auto dispatcher = bcast::make_dispatcher<std::string>(io);
+    auto dispatcher = acore::make_dispatcher<std::string>(io);
     
     auto queue = dispatcher->subscribe();
     co_spawn(io, subscriber(queue), detached);
@@ -51,7 +51,7 @@ int main() {
 ### dispatcher<T> - 消息分发器
 
 ```cpp
-auto dispatcher = bcast::make_dispatcher<Message>(io_context);
+auto dispatcher = acore::make_dispatcher<Message>(io_context);
 
 // 订阅
 auto queue = dispatcher->subscribe();
@@ -85,7 +85,7 @@ queue->push_batch({msg1, msg2, msg3});  // 批量推送
 类似 Go 的 `sync.WaitGroup`，用于等待一组异步任务完成。
 
 ```cpp
-auto wg = std::make_shared<bcast::async_waitgroup>(io_context.get_executor());
+auto wg = std::make_shared<acore::async_waitgroup>(io_context.get_executor());
 
 // 启动 3 个异步任务
 wg->add(3);
@@ -111,7 +111,7 @@ bool completed = co_await wg->wait_for(30s, asio::use_awaitable);
 用于控制并发访问数量。
 
 ```cpp
-auto sem = std::make_shared<bcast::async_semaphore>(ex, 3);  // 最多 3 个并发
+auto sem = std::make_shared<acore::async_semaphore>(ex, 3);  // 最多 3 个并发
 
 // 获取信号量
 co_await sem->acquire(asio::use_awaitable);
@@ -128,7 +128,7 @@ sem->cancel(id);  // 取消等待
 手动重置事件，用于广播通知。
 
 ```cpp
-auto event = std::make_shared<bcast::async_event>(ex);
+auto event = std::make_shared<acore::async_event>(ex);
 
 // 等待事件触发
 co_await event->wait(asio::use_awaitable);
@@ -191,8 +191,8 @@ auto [ec, messages] = co_await queue->async_read_msgs(100, use_awaitable);
 ### CMake
 
 ```cmake
-add_subdirectory(src/bcast)
-target_link_libraries(your_target PRIVATE bcast)
+add_subdirectory(src/acore)
+target_link_libraries(your_target PRIVATE acore)
 ```
 
 ### 直接编译
@@ -203,13 +203,13 @@ g++ -std=c++20 -fcoroutines your_code.cpp -lpthread -o app
 
 ## 文档
 
-- **[完整使用指南](../../docs/bcast/BCAST_GUIDE.md)** - 详细的 API 文档和最佳实践
-- **[批量操作](../../docs/bcast/BATCH_OPERATIONS.md)** - 批量操作详解
-- **[超时功能](../../docs/bcast/TIMEOUT_FEATURES.md)** - 超时机制详解
+- **[完整使用指南](../../docs/acore/acore_GUIDE.md)** - 详细的 API 文档和最佳实践
+- **[批量操作](../../docs/acore/BATCH_OPERATIONS.md)** - 批量操作详解
+- **[超时功能](../../docs/acore/TIMEOUT_FEATURES.md)** - 超时机制详解
 
 ## 示例代码
 
-查看 `examples/bcast/` 目录：
+查看 `examples/acore/` 目录：
 
 - `coroutine_example.cpp` - 协程基础示例
 - `timeout_example.cpp` - 超时功能示例

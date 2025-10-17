@@ -2,7 +2,7 @@
 // Real-world example: WebSocket-like message broadcasting with coroutines
 //
 
-#include "bcast/dispatcher.hpp"
+#include "acore/dispatcher.hpp"
 #include <asio.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/detached.hpp>
@@ -48,14 +48,14 @@ class ChatRoom {
 public:
     explicit ChatRoom(asio::io_context& io_context, std::string name)
         : name_(std::move(name))
-        , dispatcher_(bcast::make_dispatcher<ChatEvent>(io_context))
+        , dispatcher_(acore::make_dispatcher<ChatEvent>(io_context))
         , io_context_(io_context)
     {
         std::cout << "[ChatRoom:" << name_ << "] Created" << std::endl;
     }
     
     // User joins the chat room - returns a queue for receiving events
-    std::shared_ptr<bcast::async_queue<ChatEvent>> join(const std::string& user_id) {
+    std::shared_ptr<acore::async_queue<ChatEvent>> join(const std::string& user_id) {
         auto queue = dispatcher_->subscribe();
         
         // Broadcast join event
@@ -70,7 +70,7 @@ public:
     }
     
     // User leaves
-    void leave(std::shared_ptr<bcast::async_queue<ChatEvent>> queue, const std::string& user_id) {
+    void leave(std::shared_ptr<acore::async_queue<ChatEvent>> queue, const std::string& user_id) {
         // Broadcast leave event first
         dispatcher_->publish(ChatEvent{
             EventType::USER_LEFT,
@@ -95,7 +95,7 @@ public:
     
 private:
     std::string name_;
-    std::shared_ptr<bcast::dispatcher<ChatEvent>> dispatcher_;
+    std::shared_ptr<acore::dispatcher<ChatEvent>> dispatcher_;
     asio::io_context& io_context_;
 };
 
@@ -183,7 +183,7 @@ private:
     
     std::string user_id_;
     std::shared_ptr<ChatRoom> room_;
-    std::shared_ptr<bcast::async_queue<ChatEvent>> queue_;
+    std::shared_ptr<acore::async_queue<ChatEvent>> queue_;
     bool active_;
 };
 
@@ -278,7 +278,7 @@ struct StockUpdate {
 };
 
 awaitable<void> stock_subscriber_task(
-    std::shared_ptr<bcast::async_queue<StockUpdate>> queue,
+    std::shared_ptr<acore::async_queue<StockUpdate>> queue,
     std::string name)
 {
     std::cout << "[" << name << "] Monitoring stock prices..." << std::endl;
@@ -311,7 +311,7 @@ awaitable<void> stock_market_simulation(asio::io_context& io_context)
 {
     std::cout << "\n\n=== Stock Market Example ===" << std::endl;
     
-    auto stock_dispatcher = bcast::make_dispatcher<StockUpdate>(io_context);
+    auto stock_dispatcher = acore::make_dispatcher<StockUpdate>(io_context);
     
     // Create trading bots
     auto bot1 = stock_dispatcher->subscribe();

@@ -1,6 +1,6 @@
 
 # Header-only library for publish-subscribe pattern
-add_library(bcast INTERFACE
+add_library(acore INTERFACE
         async_queue.hpp
         dispatcher.hpp
         async_event.hpp
@@ -8,9 +8,9 @@ add_library(bcast INTERFACE
         async_waitgroup.hpp
 )
 
-target_include_directories(bcast INTERFACE
+target_include_directories(acore INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
 # If you have ASIO installed, link it here
-# target_link_libraries(bcast INTERFACE asio::asio)
+# target_link_libraries(acore INTERFACE asio::asio)

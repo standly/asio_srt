@@ -2,7 +2,7 @@
 // Performance benchmark for async publish-subscribe pattern
 //
 
-#include "bcast/dispatcher.hpp"
+#include "acore/dispatcher.hpp"
 #include <asio.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/detached.hpp>
@@ -59,7 +59,7 @@ public:
         std::cout << std::endl;
         
         asio::io_context io_context;
-        auto dispatcher = bcast::make_dispatcher<BenchmarkMessage>(io_context);
+        auto dispatcher = acore::make_dispatcher<BenchmarkMessage>(io_context);
         
         // Create subscribers with coroutines
         std::cout << "Creating " << config_.num_subscribers << " subscribers..." << std::endl;
@@ -137,7 +137,7 @@ public:
     
 private:
     asio::awaitable<void> subscriber_task(
-        std::shared_ptr<bcast::async_queue<BenchmarkMessage>> queue,
+        std::shared_ptr<acore::async_queue<BenchmarkMessage>> queue,
         size_t expected_messages)
     {
         size_t received = 0;

@@ -2,7 +2,7 @@
 // Timeout example: Demonstrating read operations with timeout
 //
 
-#include "bcast/dispatcher.hpp"
+#include "acore/dispatcher.hpp"
 #include <asio.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/detached.hpp>
@@ -27,7 +27,7 @@ struct Message {
 
 // Example 1: Simple timeout on single message read
 awaitable<void> example1_simple_timeout(
-    std::shared_ptr<bcast::async_queue<Message>> queue)
+    std::shared_ptr<acore::async_queue<Message>> queue)
 {
     std::cout << "=== Example 1: Simple Timeout ===" << std::endl;
     
@@ -51,7 +51,7 @@ awaitable<void> example1_simple_timeout(
 
 // Example 2: Multiple reads with timeout
 awaitable<void> example2_multiple_timeouts(
-    std::shared_ptr<bcast::async_queue<Message>> queue)
+    std::shared_ptr<acore::async_queue<Message>> queue)
 {
     std::cout << "=== Example 2: Multiple Reads with Timeout ===" << std::endl;
     
@@ -81,7 +81,7 @@ awaitable<void> example2_multiple_timeouts(
 
 // Example 3: Batch read with timeout
 awaitable<void> example3_batch_timeout(
-    std::shared_ptr<bcast::async_queue<Message>> queue)
+    std::shared_ptr<acore::async_queue<Message>> queue)
 {
     std::cout << "=== Example 3: Batch Read with Timeout ===" << std::endl;
     
@@ -106,7 +106,7 @@ awaitable<void> example3_batch_timeout(
 
 // Example 4: Retry with timeout
 awaitable<void> example4_retry_with_timeout(
-    std::shared_ptr<bcast::async_queue<Message>> queue)
+    std::shared_ptr<acore::async_queue<Message>> queue)
 {
     std::cout << "=== Example 4: Retry with Timeout ===" << std::endl;
     
@@ -135,7 +135,7 @@ awaitable<void> example4_retry_with_timeout(
 
 // Example 5: Processing with timeout and fallback
 awaitable<void> example5_timeout_with_fallback(
-    std::shared_ptr<bcast::async_queue<Message>> queue)
+    std::shared_ptr<acore::async_queue<Message>> queue)
 {
     std::cout << "=== Example 5: Timeout with Fallback ===" << std::endl;
     
@@ -163,7 +163,7 @@ awaitable<void> example5_timeout_with_fallback(
 
 // Delayed publisher - publishes messages after delays
 awaitable<void> delayed_publisher(
-    std::shared_ptr<bcast::dispatcher<Message>> disp,
+    std::shared_ptr<acore::dispatcher<Message>> disp,
     std::vector<std::pair<std::chrono::milliseconds, Message>> schedule)
 {
     auto executor = co_await asio::this_coro::executor;
@@ -180,7 +180,7 @@ awaitable<void> delayed_publisher(
 
 awaitable<void> run_examples(asio::io_context& io)
 {
-    auto dispatcher = bcast::make_dispatcher<Message>(io);
+    auto dispatcher = acore::make_dispatcher<Message>(io);
     
     // Example 1: Timeout (no messages)
     {

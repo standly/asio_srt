@@ -9,7 +9,7 @@
 #include <atomic>
 #include <chrono>
 
-namespace bcast {
+namespace acore {
 
 /**
  * @brief 异步事件（手动重置事件）
@@ -226,4 +226,4 @@ public:
     }
 };
 
-} // namespace bcast
+} // namespace acore

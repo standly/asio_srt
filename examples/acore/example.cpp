@@ -2,7 +2,7 @@
 // Example demonstrating async publish-subscribe pattern
 //
 
-#include "bcast/dispatcher.hpp"
+#include "acore/dispatcher.hpp"
 #include <asio.hpp>
 #include <iostream>
 #include <string>
@@ -26,7 +26,7 @@ int main() {
         asio::io_context io_context;
         
         // Create dispatcher for Message type
-        auto msg_dispatcher = bcast::make_dispatcher<Message>(io_context);
+        auto msg_dispatcher = acore::make_dispatcher<Message>(io_context);
         
         std::cout << "=== Asynchronous Publish-Subscribe Example ===" << std::endl;
         std::cout << "Using ASIO strand for lock-free operations" << std::endl << std::endl;

@@ -13,7 +13,7 @@ asio::awaitable<void> test_basic_usage() {
     auto ex = co_await asio::this_coro::executor;
     auto& io_context = static_cast<asio::io_context&>(ex.context());
     
-    auto wg = std::make_shared<bcast::async_waitgroup>(ex);
+    auto wg = std::make_shared<acore::async_waitgroup>(ex);
     
     std::cout << "测试 1: 基本功能 - 等待多个任务完成\n";
     std::cout << "  → 启动 5 个异步任务...\n";
@@ -49,7 +49,7 @@ asio::awaitable<void> test_batch_add() {
     auto ex = co_await asio::this_coro::executor;
     auto& io_context = static_cast<asio::io_context&>(ex.context());
     
-    auto wg = std::make_shared<bcast::async_waitgroup>(ex);
+    auto wg = std::make_shared<acore::async_waitgroup>(ex);
     
     std::cout << "测试 2: 批量添加和快速完成\n";
     std::cout << "  → 批量添加 10 个任务\n";
@@ -78,7 +78,7 @@ asio::awaitable<void> test_timeout() {
     auto ex = co_await asio::this_coro::executor;
     auto& io_context = static_cast<asio::io_context&>(ex.context());
     
-    auto wg = std::make_shared<bcast::async_waitgroup>(ex);
+    auto wg = std::make_shared<acore::async_waitgroup>(ex);
     
     std::cout << "测试 3: 超时等待\n";
     std::cout << "  → 启动一个需要 3 秒的任务\n";
@@ -122,7 +122,7 @@ asio::awaitable<void> test_multiple_waiters() {
     auto ex = co_await asio::this_coro::executor;
     auto& io_context = static_cast<asio::io_context&>(ex.context());
     
-    auto wg = std::make_shared<bcast::async_waitgroup>(ex);
+    auto wg = std::make_shared<acore::async_waitgroup>(ex);
     
     std::cout << "测试 4: 多个等待者\n";
     std::cout << "  → 启动 3 个等待者\n";
@@ -164,7 +164,7 @@ asio::awaitable<void> test_multiple_waiters() {
 asio::awaitable<void> test_immediate_completion() {
     auto ex = co_await asio::this_coro::executor;
     
-    auto wg = std::make_shared<bcast::async_waitgroup>(ex);
+    auto wg = std::make_shared<acore::async_waitgroup>(ex);
     
     std::cout << "测试 5: 立即完成（计数已为 0）\n";
     std::cout << "  → 当前计数: " << wg->count() << "\n";
@@ -184,7 +184,7 @@ asio::awaitable<void> test_nested_waitgroups() {
     auto ex = co_await asio::this_coro::executor;
     auto& io_context = static_cast<asio::io_context&>(ex.context());
     
-    auto main_wg = std::make_shared<bcast::async_waitgroup>(ex);
+    auto main_wg = std::make_shared<acore::async_waitgroup>(ex);
     
     std::cout << "测试 6: 嵌套使用 - 等待子任务组\n";
     std::cout << "  → 启动 3 个主任务，每个主任务有 3 个子任务\n";
@@ -196,7 +196,7 @@ asio::awaitable<void> test_nested_waitgroups() {
             std::cout << "    主任务 " << i << " 开始\n";
             
             // 创建子任务组
-            auto sub_wg = std::make_shared<bcast::async_waitgroup>(ex);
+            auto sub_wg = std::make_shared<acore::async_waitgroup>(ex);
             sub_wg->add(3);
             
             for (int j = 0; j < 3; ++j) {
@@ -226,7 +226,7 @@ asio::awaitable<void> test_nested_waitgroups() {
 // 测试 7: 使用 RAII 风格的自动 done()
 class WaitGroupGuard {
 public:
-    explicit WaitGroupGuard(std::shared_ptr<bcast::async_waitgroup> wg)
+    explicit WaitGroupGuard(std::shared_ptr<acore::async_waitgroup> wg)
         : wg_(std::move(wg)) {}
     
     ~WaitGroupGuard() {
@@ -242,14 +242,14 @@ public:
     WaitGroupGuard& operator=(WaitGroupGuard&&) = delete;
     
 private:
-    std::shared_ptr<bcast::async_waitgroup> wg_;
+    std::shared_ptr<acore::async_waitgroup> wg_;
 };
 
 asio::awaitable<void> test_raii_guard() {
     auto ex = co_await asio::this_coro::executor;
     auto& io_context = static_cast<asio::io_context&>(ex.context());
     
-    auto wg = std::make_shared<bcast::async_waitgroup>(ex);
+    auto wg = std::make_shared<acore::async_waitgroup>(ex);
     
     std::cout << "测试 7: RAII 风格的自动 done()\n";
     std::cout << "  → 启动 3 个使用 guard 的任务\n";

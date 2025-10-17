@@ -141,5 +141,5 @@ target_link_libraries(srt_resilient_client_example
 )
 
 
-# BCAST Examples
+# acore Examples
 add_subdirectory(acore)
