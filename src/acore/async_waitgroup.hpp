@@ -32,22 +32,33 @@ namespace acore {
  * - 协调多个 worker 的生命周期
  * - 资源清理前确保所有操作完成
  * 
- * 示例：
+ * 正确的使用模式：
  * @code
  * auto wg = std::make_shared<async_waitgroup>(io_context);
  * 
- * // 启动3个异步任务
- * wg->add(3);
+ * // ✅ 正确：先 add，再启动任务
+ * wg->add(3);  // (1) 先增加计数
  * for (int i = 0; i < 3; ++i) {
  *     asio::co_spawn(io_context, [wg, i]() -> asio::awaitable<void> {
  *         // ... 做一些异步工作 ...
- *         wg->done();  // 完成
+ *         wg->done();  // (2) 任务完成时减少计数
  *     }, asio::detached);
  * }
  * 
- * // 等待所有任务完成
+ * // (3) 等待所有任务完成
  * co_await wg->wait(asio::use_awaitable);
  * std::cout << "所有任务完成！\n";
+ * @endcode
+ * 
+ * 错误的使用模式：
+ * @code
+ * // ❌ 错误：先启动任务，后 add
+ * for (int i = 0; i < 3; ++i) {
+ *     asio::co_spawn(io_context, [wg]() -> asio::awaitable<void> {
+ *         wg->done();  // ❌ 可能在 add() 前执行，导致负数计数
+ *     }, asio::detached);
+ * }
+ * wg->add(3);  // ❌ 太晚了，done() 可能已经执行
  * @endcode
  */
 class async_waitgroup : public std::enable_shared_from_this<async_waitgroup> {
@@ -56,8 +67,29 @@ private:
 
     asio::strand<executor_type> strand_;
     std::deque<std::unique_ptr<detail::void_handler_base>> waiters_;  // 仅在 strand 内访问
-    // count_ 在 strand 内访问，不需要 atomic（异步语义，所有更新都通过 strand 序列化）
-    int64_t count_{0};  // 仅在 strand 内访问
+    
+    /**
+     * count_ 使用 atomic 的设计说明：
+     * 
+     * 为什么使用 atomic：
+     * - add()/done() 必须同步更新计数（立即生效）
+     * - 如果 add() 是异步的，会导致严重bug：
+     *   wg->add(3);              // 如果异步，post 到 strand
+     *   co_await wg->wait(...);  // 也 post 到 strand，可能先执行！
+     *   // Bug: wait 看到 count=0，错误地立即返回
+     * - Go 的 sync.WaitGroup.Add() 也是同步的，这是正确的语义
+     * 
+     * 为什么需要双重检查（见 add() 方法）：
+     * - count 可能经历多次 0 转换：N -> 0 -> M -> 0
+     * - 每次到 0 都会 post 一个 notify 任务
+     * - 双重检查确保只有 count 真正为 0 时才唤醒 waiters
+     * 
+     * atomic 和 strand 的分工：
+     * - count_: 需要同步更新 + 跨线程访问 -> atomic
+     * - waiters_: 只在异步上下文中修改 -> strand 保护
+     * - 这不是"混用"，而是"各司其职"
+     */
+    std::atomic<int64_t> count_{0};
 
 public:
     // 禁止拷贝和移动（设计上通过 shared_ptr 使用）
@@ -82,40 +114,71 @@ public:
     }
 
     /**
-     * @brief 增加计数器（异步操作）
+     * @brief 增加计数器（同步更新，异步唤醒）
      * 
      * @param delta 增加的数量（可以为负数，但结果不能为负）
      * 
-     * 语义：计数更新是异步的（通过 strand 序列化），这符合异步编程模式
+     * 关键设计决策：
+     * - 计数更新是**同步的**（立即生效，使用 atomic）
+     * - 唤醒操作是**异步的**（post 到 strand）
+     * 
+     * 为什么 add() 必须同步：
+     * @code
+     * wg->add(3);              // 必须立即更新 count = 3
+     * spawn_tasks();           // 启动3个任务
+     * co_await wg->wait(...);  // 期望等待这3个任务完成
+     * 
+     * // 如果 add() 是异步的（post 到 strand）：
+     * wg->add(3);              // post，可能延迟执行
+     * co_await wg->wait(...);  // 也 post，可能先执行
+     * // Bug: wait 看到 count=0，错误地立即返回！
+     * @endcode
      * 
      * 典型用法：
-     * - 在启动异步任务前调用 add(1)
-     * - 可以批量添加：add(10)
+     * - 在启动异步任务前调用 add(1) 或 add(N)
+     * - 任务完成时调用 done()
      * 
-     * 性能建议：
-     * - 每次调用 add() 都会 post 一个任务到 strand
-     * - 如果要启动 N 个任务，使用 add(N) 比调用 N 次 add(1) 更高效
-     * - 批量操作可以减少 post 开销和 lambda 对象创建
-     * 
-     * 错误处理：如果计数变为负数，会触发断言（debug）或恢复为0（release）
+     * 错误处理：
+     * - 如果计数变为负数，会触发断言（debug）或恢复为0（release）
      */
     void add(int64_t delta = 1) {
         if (delta == 0) return;
         
-        asio::post(strand_, [this, self = shared_from_this(), delta]() {
-            count_ += delta;
-            
-            if (count_ < 0) {
-                // 错误：计数变为负数（done()调用次数超过add()）
-                assert(false && "async_waitgroup: negative counter (done() called too many times)");
-                count_ = 0;
-            }
-            
-            // 如果计数归零，唤醒所有等待者
-            if (count_ == 0) {
-                notify_all_waiters();
-            }
-        });
+        // 同步更新计数（使用 atomic，立即生效）
+        // memory_order_acq_rel: 比 relaxed 更安全，性能差异可忽略
+        // - Release: 发布之前的写入（虽然 WaitGroup 本身不依赖此特性）
+        // - Acquire: 获取最新值
+        // - 也可以用 relaxed，但 acq_rel 对将来的扩展更安全
+        int64_t old_count = count_.fetch_add(delta, std::memory_order_acq_rel);
+        int64_t new_count = old_count + delta;
+        
+        if (new_count < 0) {
+            // 错误：计数变为负数（done()调用次数超过add()）
+            count_.store(0, std::memory_order_release);
+            assert(false && "async_waitgroup: negative counter (done() called too many times)");
+            return;  // release build: assert是no-op，恢复count=0后返回
+        }
+        
+        // 如果计数归零，异步唤醒所有等待者
+        if (new_count == 0) {
+            asio::post(strand_, [this, self = shared_from_this()]() {
+                // 双重检查：性能优化，避免不必要的操作
+                // 
+                // 为什么需要：
+                // - count 可能在 post(notify) 和执行之间发生变化
+                // - 如果 count 已经不是 0（有新任务添加），不应该唤醒
+                // - 虽然错误唤醒不会破坏正确性（waiters可能已空），
+                //   但会浪费CPU（遍历空队列）
+                // 
+                // 示例：
+                //   T1: done() -> count: 1->0 -> post(notify_1)
+                //   T2: add(10) -> count: 0->10 (新任务)
+                //   T3: notify_1 执行，count=10 ← 检查避免无用的唤醒
+                if (count_.load(std::memory_order_acquire) == 0) {
+                    notify_all_waiters();
+                }
+            });
+        }
     }
 
     /**
@@ -143,7 +206,8 @@ public:
         return asio::async_initiate<CompletionToken, void()>(
             [this, self = shared_from_this()](auto handler) {
                 asio::post(strand_, [this, self, handler = std::move(handler)]() mutable {
-                    if (count_ == 0) {
+                    // 使用 atomic load 读取 count
+                    if (count_.load(std::memory_order_acquire) == 0) {
                         // 计数已为 0，立即完成
                         std::move(handler)();
                     } else {
@@ -205,7 +269,8 @@ public:
                 
                 // 等待计数归零
                 asio::post(strand_, [this, self, completed, timer, handler_ptr]() mutable {
-                    if (count_ == 0) {
+                    // 使用 atomic load 读取 count
+                    if (count_.load(std::memory_order_acquire) == 0) {
                         // 计数已为 0
                         if (!completed->exchange(true, std::memory_order_relaxed)) {
                             timer->cancel();
@@ -236,20 +301,63 @@ public:
     }
 
     /**
+     * @brief 获取当前计数（同步，轻量级）
+     * 
+     * 用途：
+     * - 简单的状态检查（不需要严格的序列化保证）
+     * - 日志输出、调试信息
+     * - 非协程上下文中的快速查询
+     * 
+     * 注意事项：
+     * - 返回值是时间点快照，可能立即过时
+     * - 线程安全（atomic 读取）
+     * - 如果需要基于 count 做决策，考虑使用 wait() 而非轮询 count
+     * 
+     * 示例：
+     * @code
+     * // ✅ 好：用于日志/调试
+     * std::cout << "剩余任务: " << wg->count() << "\n";
+     * 
+     * // ⚠️ 谨慎：用于条件判断（存在竞态）
+     * if (wg->count() == 0) {
+     *     // count 可能在检查后立即变化
+     *     do_something();
+     * }
+     * 
+     * // ✅ 更好：使用 wait() 而非轮询
+     * co_await wg->wait(use_awaitable);
+     * do_something();  // 保证 count=0
+     * @endcode
+     */
+    int64_t count() const noexcept {
+        return count_.load(std::memory_order_acquire);
+    }
+    
+    /**
      * @brief 异步获取当前计数
      * 
-     * 设计说明：
-     * - 使用异步接口而非同步的 count() 方法
-     * - 原因：同步方法返回的值可能在下一时刻就失效（竞态条件）
-     * - 异步接口强制用户意识到这是一个时间点的快照，仅在回调时刻有效
-     * - 这避免了给用户虚假的线程安全感
+     * 用途：
+     * - 需要与其他 strand 操作序列化时使用
+     * - 协程上下文中想要明确异步语义
+     * 
+     * 大多数情况下，同步的 count() 已经足够。
+     * 此方法主要用于特殊场景：需要确保 count 查询
+     * 与其他异步操作的顺序关系。
+     * 
+     * 示例：
+     * @code
+     * // 确保 count 查询在某个异步操作之后
+     * co_await some_async_op(use_awaitable);
+     * auto c = co_await wg->async_count(use_awaitable);
+     * // 保证看到 some_async_op 完成后的 count
+     * @endcode
      */
     template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
     auto async_count(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
         return asio::async_initiate<CompletionToken, void(int64_t)>(
             [this, self = shared_from_this()](auto handler) {
                 asio::post(strand_, [this, self, handler = std::move(handler)]() mutable {
-                    std::move(handler)(count_);
+                    std::move(handler)(count_.load(std::memory_order_acquire));
                 });
             },
             token

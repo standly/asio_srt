@@ -41,8 +41,7 @@ asio::awaitable<void> test_basic_usage() {
     std::cout << "  ✓ 所有任务完成！耗时: " 
               << std::chrono::duration_cast<std::chrono::milliseconds>(duration).count() 
               << " ms\n";
-    int64_t count = co_await wg->async_count(asio::use_awaitable);
-    std::cout << "  ✓ 当前计数: " << count << "\n\n";
+    std::cout << "  ✓ 当前计数: " << wg->count() << "\n\n";
 }
 
 // 测试 2: 批量添加和提前完成
@@ -57,8 +56,7 @@ asio::awaitable<void> test_batch_add() {
     
     // 批量添加
     wg->add(10);
-    int64_t count_batch1 = co_await wg->async_count(asio::use_awaitable);
-    std::cout << "  → 当前计数: " << count_batch1 << "\n";
+    std::cout << "  → 当前计数: " << wg->count() << "\n";
     
     // 快速完成所有任务
     for (int i = 0; i < 10; ++i) {
@@ -72,8 +70,7 @@ asio::awaitable<void> test_batch_add() {
     // 等待完成
     co_await wg->wait(asio::use_awaitable);
     std::cout << "  ✓ 批量任务全部完成\n";
-    int64_t count_batch2 = co_await wg->async_count(asio::use_awaitable);
-    std::cout << "  ✓ 最终计数: " << count_batch2 << "\n\n";
+    std::cout << "  ✓ 最终计数: " << wg->count() << "\n\n";
 }
 
 // 测试 3: 超时等待
@@ -101,8 +98,7 @@ asio::awaitable<void> test_timeout() {
     
     if (!completed) {
         std::cout << "  ✓ 1 秒超时（预期）\n";
-        int64_t count_timeout1 = co_await wg->async_count(asio::use_awaitable);
-        std::cout << "  → 当前计数: " << count_timeout1 << "\n";
+        std::cout << "  → 当前计数: " << wg->count() << "\n";
     } else {
         std::cout << "  ✗ 不应该在 1 秒内完成\n";
     }
@@ -113,8 +109,7 @@ asio::awaitable<void> test_timeout() {
     
     if (completed) {
         std::cout << "  ✓ 任务最终完成\n";
-        int64_t count_timeout2 = co_await wg->async_count(asio::use_awaitable);
-        std::cout << "  ✓ 最终计数: " << count_timeout2 << "\n";
+        std::cout << "  ✓ 最终计数: " << wg->count() << "\n";
     } else {
         std::cout << "  ✗ 不应该超时\n";
     }
@@ -172,8 +167,7 @@ asio::awaitable<void> test_immediate_completion() {
     auto wg = std::make_shared<acore::async_waitgroup>(ex);
     
     std::cout << "测试 5: 立即完成（计数已为 0）\n";
-    int64_t count_imm = co_await wg->async_count(asio::use_awaitable);
-    std::cout << "  → 当前计数: " << count_imm << "\n";
+    std::cout << "  → 当前计数: " << wg->count() << "\n";
     std::cout << "  → 调用 wait()...\n";
     
     auto start = std::chrono::steady_clock::now();
