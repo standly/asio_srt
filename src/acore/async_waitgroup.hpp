@@ -9,6 +9,7 @@
 #include <atomic>
 #include <stdexcept>
 #include <cassert>
+#include "handler_traits.hpp"
 
 namespace acore {
 
@@ -54,38 +55,7 @@ private:
     using executor_type = asio::any_io_executor;
 
     asio::strand<executor_type> strand_;
-    
-    // 类型擦除的 handler 接口
-    struct handler_base {
-        virtual ~handler_base() = default;
-        virtual void invoke() = 0;
-    };
-    
-    template<typename Handler>
-    struct handler_impl : handler_base {
-        Handler handler_;
-        explicit handler_impl(Handler&& h) : handler_(std::move(h)) {}
-        void invoke() override {
-            std::move(handler_)();
-        }
-    };
-    
-    // 超时 handler 接口（带 bool 参数）
-    struct timeout_handler_base {
-        virtual ~timeout_handler_base() = default;
-        virtual void invoke(bool result) = 0;
-    };
-    
-    template<typename Handler>
-    struct timeout_handler_impl : timeout_handler_base {
-        Handler handler_;
-        explicit timeout_handler_impl(Handler&& h) : handler_(std::move(h)) {}
-        void invoke(bool result) override {
-            std::move(handler_)(result);
-        }
-    };
-    
-    std::deque<std::unique_ptr<handler_base>> waiters_;  // 仅在 strand 内访问
+    std::deque<std::unique_ptr<detail::void_handler_base>> waiters_;  // 仅在 strand 内访问
     // count_ 使用 atomic：因为 add()/done() 是同步操作，会在多线程中调用
     std::atomic<int64_t> count_{0};
     // closed_ 使用 atomic：因为 is_closed() 和 add() 可能在多线程中调用
@@ -125,20 +95,20 @@ public:
         if (delta == 0) return;
         
         // 检查是否已关闭（在debug模式断言，release模式忽略）
-        bool is_closed = closed_.load(std::memory_order_acquire);
+        bool is_closed = closed_.load(std::memory_order_relaxed);
         assert(!is_closed && "async_waitgroup: add() called after close()");
         if (is_closed) {
             return;  // release 模式下静默返回
         }
         
         // 同步更新计数
-        int64_t old_count = count_.fetch_add(delta, std::memory_order_acq_rel);
+        int64_t old_count = count_.fetch_add(delta, std::memory_order_relaxed);
         int64_t new_count = old_count + delta;
         
         if (new_count < 0) {
             // 错误：计数变为负数（done()调用次数超过add()）
             // 恢复为0并断言
-            count_.store(0, std::memory_order_release);
+            count_.store(0, std::memory_order_relaxed);
             assert(false && "async_waitgroup: negative counter (done() called too many times)");
             // release模式下，继续执行，触发所有等待者
             new_count = 0;
@@ -187,13 +157,13 @@ public:
         return asio::async_initiate<CompletionToken, void()>(
             [this, self = shared_from_this()](auto handler) {
                 asio::post(strand_, [this, self, handler = std::move(handler)]() mutable {
-                    if (count_.load(std::memory_order_acquire) == 0) {
+                    if (count_.load(std::memory_order_relaxed) == 0) {
                         // 计数已为 0，立即完成
                         std::move(handler)();
                     } else {
                         // 计数不为 0，加入等待队列
                         waiters_.push_back(
-                            std::make_unique<handler_impl<decltype(handler)>>(std::move(handler))
+                            std::make_unique<detail::void_handler_impl<decltype(handler)>>(std::move(handler))
                         );
                     }
                 });
@@ -231,8 +201,8 @@ public:
                 auto timer = std::make_shared<asio::steady_timer>(strand_.get_inner_executor());
                 
                 // 将 handler 类型擦除并存储在 shared_ptr 中
-                auto handler_ptr = std::make_shared<std::unique_ptr<timeout_handler_base>>(
-                    std::make_unique<timeout_handler_impl<decltype(handler)>>(std::move(handler))
+                auto handler_ptr = std::make_shared<std::unique_ptr<detail::bool_handler_base>>(
+                    std::make_unique<detail::bool_handler_impl<decltype(handler)>>(std::move(handler))
                 );
                 
                 // 超时定时器
@@ -249,9 +219,9 @@ public:
                 
                 // 等待计数归零
                 asio::post(strand_, [this, self, completed, timer, handler_ptr]() mutable {
-                    if (count_.load(std::memory_order_acquire) == 0) {
+                    if (count_.load(std::memory_order_relaxed) == 0) {
                         // 计数已为 0
-                        if (!completed->exchange(true, std::memory_order_acq_rel)) {
+                        if (!completed->exchange(true, std::memory_order_relaxed)) {
                             timer->cancel();
                             if (*handler_ptr) {
                                 auto h = std::move(*handler_ptr);
@@ -261,7 +231,7 @@ public:
                     } else {
                         // 加入等待队列
                         auto wrapper = [completed, timer, handler_ptr]() mutable {
-                            if (!completed->exchange(true, std::memory_order_acq_rel)) {
+                            if (!completed->exchange(true, std::memory_order_relaxed)) {
                                 timer->cancel();
                                 if (*handler_ptr) {
                                     auto h = std::move(*handler_ptr);
@@ -270,7 +240,7 @@ public:
                             }
                         };
                         waiters_.push_back(
-                            std::make_unique<handler_impl<decltype(wrapper)>>(std::move(wrapper))
+                            std::make_unique<detail::void_handler_impl<decltype(wrapper)>>(std::move(wrapper))
                         );
                     }
                 });
@@ -285,7 +255,7 @@ public:
      * 注意：由于并发性，返回的值可能立即过时
      */
     int64_t count() const noexcept {
-        return count_.load(std::memory_order_acquire);
+        return count_.load(std::memory_order_relaxed);
     }
 
     /**
@@ -297,8 +267,8 @@ public:
      */
     void reset() {
         asio::post(strand_, [this, self = shared_from_this()]() {
-            count_.store(0, std::memory_order_release);
-            closed_.store(false, std::memory_order_release);
+            count_.store(0, std::memory_order_relaxed);
+            closed_.store(false, std::memory_order_relaxed);
             notify_all_waiters();
         });
     }
@@ -312,9 +282,9 @@ public:
      */
     void close() {
         asio::post(strand_, [this, self = shared_from_this()]() {
-            closed_.store(true, std::memory_order_release);
+            closed_.store(true, std::memory_order_relaxed);
             // 如果当前计数为 0，立即唤醒所有等待者
-            if (count_.load(std::memory_order_acquire) == 0) {
+            if (count_.load(std::memory_order_relaxed) == 0) {
                 notify_all_waiters();
             }
         });
@@ -324,7 +294,7 @@ public:
      * @brief 检查是否已关闭
      */
     bool is_closed() const noexcept {
-        return closed_.load(std::memory_order_acquire);
+        return closed_.load(std::memory_order_relaxed);
     }
 
     executor_type get_executor() const noexcept {

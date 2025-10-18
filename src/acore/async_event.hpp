@@ -8,6 +8,7 @@
 #include <memory>
 #include <atomic>
 #include <chrono>
+#include "handler_traits.hpp"
 
 namespace acore {
 
@@ -30,38 +31,7 @@ private:
     using executor_type = asio::any_io_executor;
 
     asio::strand<executor_type> strand_;
-    
-    // 类型擦除的 handler 接口（参考 async_semaphore）
-    struct handler_base {
-        virtual ~handler_base() = default;
-        virtual void invoke() = 0;
-    };
-    
-    template<typename Handler>
-    struct handler_impl : handler_base {
-        Handler handler_;
-        explicit handler_impl(Handler&& h) : handler_(std::move(h)) {}
-        void invoke() override {
-            std::move(handler_)();
-        }
-    };
-    
-    // 超时 handler 接口（带bool参数）
-    struct timeout_handler_base {
-        virtual ~timeout_handler_base() = default;
-        virtual void invoke(bool result) = 0;
-    };
-    
-    template<typename Handler>
-    struct timeout_handler_impl : timeout_handler_base {
-        Handler handler_;
-        explicit timeout_handler_impl(Handler&& h) : handler_(std::move(h)) {}
-        void invoke(bool result) override {
-            std::move(handler_)(result);
-        }
-    };
-    
-    std::deque<std::unique_ptr<handler_base>> waiters_;  // 仅在 strand 内访问
+    std::deque<std::unique_ptr<detail::void_handler_base>> waiters_;  // 仅在 strand 内访问
     // is_set_ 使用 atomic：允许 is_set() 方法无锁读取（虽然值可能过时）
     std::atomic<bool> is_set_{false};
 
@@ -80,13 +50,13 @@ public:
         return asio::async_initiate<CompletionToken, void()>(
             [this](auto handler) {
                 asio::post(strand_, [this, handler = std::move(handler)]() mutable {
-                    if (is_set_.load(std::memory_order_acquire)) {
+                    if (is_set_.load(std::memory_order_relaxed)) {
                         // 事件已触发，立即完成
                         std::move(handler)();
                     } else {
                         // 事件未触发，加入等待队列
                         waiters_.push_back(
-                            std::make_unique<handler_impl<decltype(handler)>>(std::move(handler))
+                            std::make_unique<detail::void_handler_impl<decltype(handler)>>(std::move(handler))
                         );
                     }
                 });
@@ -115,8 +85,8 @@ public:
                 auto timer = std::make_shared<asio::steady_timer>(strand_.get_inner_executor());
                 
                 // 将 handler 类型擦除并存储在 shared_ptr 中，两个路径共享
-                auto handler_ptr = std::make_shared<std::unique_ptr<timeout_handler_base>>(
-                    std::make_unique<timeout_handler_impl<decltype(handler)>>(std::move(handler))
+                auto handler_ptr = std::make_shared<std::unique_ptr<detail::bool_handler_base>>(
+                    std::make_unique<detail::bool_handler_impl<decltype(handler)>>(std::move(handler))
                 );
                 
                 // 超时定时器
@@ -133,9 +103,9 @@ public:
                 
                 // 事件等待
                 asio::post(strand_, [this, completed, timer, handler_ptr]() mutable {
-                    if (is_set_.load(std::memory_order_acquire)) {
+                    if (is_set_.load(std::memory_order_relaxed)) {
                         // 事件已触发
-                        if (!completed->exchange(true, std::memory_order_acq_rel)) {
+                        if (!completed->exchange(true, std::memory_order_relaxed)) {
                             timer->cancel();
                             if (*handler_ptr) {
                                 auto h = std::move(*handler_ptr);
@@ -145,7 +115,7 @@ public:
                     } else {
                         // 加入等待队列
                         auto wrapper = [completed, timer, handler_ptr]() mutable {
-                            if (!completed->exchange(true, std::memory_order_acq_rel)) {
+                            if (!completed->exchange(true, std::memory_order_relaxed)) {
                                 timer->cancel();
                                 if (*handler_ptr) {
                                     auto h = std::move(*handler_ptr);
@@ -154,7 +124,7 @@ public:
                             }
                         };
                         waiters_.push_back(
-                            std::make_unique<handler_impl<decltype(wrapper)>>(std::move(wrapper))
+                            std::make_unique<detail::void_handler_impl<decltype(wrapper)>>(std::move(wrapper))
                         );
                     }
                 });
@@ -171,11 +141,11 @@ public:
      */
     void notify_all() {
         asio::post(strand_, [this]() {
-            if (is_set_.load(std::memory_order_acquire)) {
+            if (is_set_.load(std::memory_order_relaxed)) {
                 return;  // 已经触发，避免重复
             }
             
-            is_set_.store(true, std::memory_order_release);
+            is_set_.store(true, std::memory_order_relaxed);
 
             // 唤醒所有等待者
             while (!waiters_.empty()) {
@@ -193,7 +163,7 @@ public:
      */
     void reset() {
         asio::post(strand_, [this]() {
-            is_set_.store(false, std::memory_order_release);
+            is_set_.store(false, std::memory_order_relaxed);
         });
     }
 
@@ -203,7 +173,7 @@ public:
      * 注意：由于并发性，返回的值可能立即过时
      */
     bool is_set() const noexcept {
-        return is_set_.load(std::memory_order_acquire);
+        return is_set_.load(std::memory_order_relaxed);
     }
 
     /**

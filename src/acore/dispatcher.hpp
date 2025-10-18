@@ -60,24 +60,11 @@ public:
 
     /**
      * @brief Subscribe to messages and get an async_queue
-     * @return Shared pointer to async_queue for reading messages
      * 
      * Thread-safe: can be called from any thread.
      * 
-     * Usage with coroutines:
-     * @code
-     * auto queue = dispatcher->subscribe();
-     * co_spawn(ex, [queue]() -> awaitable<void> {
-     *     while (true) {
-     *         auto [ec, msg] = co_await queue->async_read_msg(use_awaitable);
-     *         if (ec) break;
-     *         process(msg);
-     *     }
-     * }, detached);
-     * @endcode
-     * 
-     * Batch reading:
-     * - co_await queue->async_read_msgs(10, asio::use_awaitable)  // Read up to 10 messages
+     * Note: Returns queue immediately, but actual subscription happens asynchronously.
+     * This is safe because publish() is also async.
      */
     queue_ptr subscribe() {
         auto queue = std::make_shared<async_queue<T>>(io_context_);
@@ -92,26 +79,39 @@ public:
     }
 
     /**
-     * @brief Unsubscribe by queue pointer
-     * @param queue The queue returned from subscribe()
+     * @brief Unsubscribe by subscriber ID
+     * @param subscriber_id The ID returned from subscribe_with_id()
      * 
      * Thread-safe: can be called from any thread
-     * 
-     * Note: This searches through all subscribers (O(n)).
-     * Keep a reference to the queue to unsubscribe later.
+     * Time complexity: O(1)
      */
-    void unsubscribe(queue_ptr queue) {
-        asio::post(strand_, [self = this->shared_from_this(), queue]() {
-            // Search for the queue in subscribers
-            for (auto it = self->subscribers_.begin(); it != self->subscribers_.end(); ++it) {
-                if (it->second == queue) {
-                    queue->stop();
-                    self->subscribers_.erase(it);
-                    self->subscriber_count_.fetch_sub(1, std::memory_order_relaxed);
-                    return;
-                }
+    void unsubscribe(uint64_t subscriber_id) {
+        asio::post(strand_, [self = this->shared_from_this(), subscriber_id]() {
+            auto it = self->subscribers_.find(subscriber_id);
+            if (it != self->subscribers_.end()) {
+                it->second->stop();
+                self->subscribers_.erase(it);
+                self->subscriber_count_.fetch_sub(1, std::memory_order_relaxed);
             }
         });
+    }
+    
+    /**
+     * @brief Subscribe and get both queue and subscriber ID
+     * @return pair of (subscriber_id, queue_ptr)
+     * 
+     * Use this if you need to unsubscribe later using the ID (O(1) operation).
+     */
+    std::pair<uint64_t, queue_ptr> subscribe_with_id() {
+        auto queue = std::make_shared<async_queue<T>>(io_context_);
+        uint64_t id = next_id_.fetch_add(1, std::memory_order_relaxed);
+        
+        asio::post(strand_, [self = this->shared_from_this(), id, queue]() {
+            self->subscribers_[id] = queue;
+            self->subscriber_count_.fetch_add(1, std::memory_order_relaxed);
+        });
+        
+        return {id, queue};
     }
 
 
@@ -134,25 +134,11 @@ public:
     /**
      * @brief Publish message to all subscribers (rvalue version)
      * @param msg Message to broadcast
+     * 
+     * Note: All subscribers get a copy. The rvalue is consumed internally.
      */
     void publish(T&& msg) {
-        asio::post(strand_, [self = this->shared_from_this(), msg = std::move(msg)]() mutable {
-            // For the last subscriber, we can move; for others, copy
-            if (self->subscribers_.empty()) {
-                return;
-            }
-            
-            auto it = self->subscribers_.begin();
-            auto last = std::prev(self->subscribers_.end());
-            
-            // Copy to all but last
-            for (; it != last; ++it) {
-                it->second->push(msg);
-            }
-            
-            // Move to last
-            last->second->push(std::move(msg));
-        });
+        publish(static_cast<const T&>(msg));
     }
 
     /**
