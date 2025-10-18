@@ -57,8 +57,8 @@ try {
 ```
 
 详见：
-- [错误处理指南](docs/ERROR_HANDLING.md)
-- [错误事件实现](docs/ERROR_EVENT_IMPLEMENTATION.md)
+- [错误处理指南](docs/design/error-handling/ERROR_HANDLING.md)
+- [错误事件实现](docs/design/error-handling/ERROR_EVENT_IMPLEMENTATION.md)
 
 ### 日志系统
 
@@ -121,7 +121,7 @@ SrtReactor::set_log_callback(nullptr);
 - `Error` - 错误信息（连接断开、IO 错误）
 - `Critical` - 严重错误
 
-**完整文档**：[日志系统使用指南](docs/LOGGING_ENHANCED.md)
+**完整文档**：[日志系统使用指南](docs/design/logging/LOGGING_ENHANCED.md)
 
 ### 核心组件
 
@@ -173,13 +173,19 @@ asio_srt/
 │   ├── resolved/             # 已编译的依赖库
 │   ├── scripts/              # 依赖管理脚本（depends.cmake）
 │   └── build/                # 依赖构建目录
+├── docs/                     # 📖 文档目录（已重新组织）
+│   ├── api/                  # API 参考文档
+│   ├── guides/               # 使用指南
+│   ├── design/               # 设计文档
+│   └── development/          # 开发文档
 ├── src/
+│   ├── acore/                # 异步核心组件（信号量、队列、WaitGroup 等）
 │   ├── asrt/                 # 核心 SRT+ASIO 集成模块
 │   │   ├── srt_reactor.h     # Reactor 接口定义
 │   │   └── srt_reactor.cpp   # Reactor 实现
-│   ├── aentry/               # 应用入口（待完成）
-│   └── core/                 # 核心功能模块（待开发）
-└── tests/                    # 测试代码（待开发）
+│   └── aentry/               # 应用入口（待完成）
+├── examples/                 # 示例代码
+└── tests/                    # 测试代码
 ```
 
 ## ⚙️ 核心实现细节
@@ -345,7 +351,7 @@ asio::awaitable<void> timeout_example() {
 }
 ```
 
-更多示例请参见 [docs/TIMEOUT_API.md](docs/TIMEOUT_API.md)。
+更多示例请参见 [docs/design/timeout/TIMEOUT_API.md](docs/design/timeout/TIMEOUT_API.md)。
 
 ## 🤝 贡献
 
@@ -359,9 +365,14 @@ asio::awaitable<void> timeout_example() {
 
 ### 项目文档
 
-- [日志系统使用指南](docs/LOGGING_ENHANCED.md) - 简洁易用的日志配置，支持自定义输出
-- [错误处理指南](docs/ERROR_HANDLING.md) - 标准化的错误处理
-- [超时 API 使用](docs/TIMEOUT_API.md) - 带超时的异步操作
+📚 **[完整文档索引](docs/README.md)** - 查看所有文档
+
+**快速链接**：
+- [快速入门](docs/guides/QUICK_START.md) - 快速开始使用
+- [日志系统使用指南](docs/design/logging/LOGGING_ENHANCED.md) - 简洁易用的日志配置
+- [错误处理指南](docs/design/error-handling/ERROR_HANDLING.md) - 标准化的错误处理
+- [超时 API 使用](docs/design/timeout/TIMEOUT_API.md) - 带超时的异步操作
+- [ACORE API 文档](docs/api/acore/) - 异步核心组件
 - [自定义日志示例](examples/custom_logging_example.cpp) - 各种自定义日志的使用示例
 
 ### 外部资源
