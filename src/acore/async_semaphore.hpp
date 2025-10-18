@@ -33,8 +33,7 @@ private:
     waiter_list waiters_;  // 仅在 strand 内访问
     // O(1) cancel: map from waiter_id to iterator (list iterators are stable)
     std::unordered_map<uint64_t, waiter_list::iterator> waiter_map_;  // 仅在 strand 内访问
-    // count_ 使用 atomic：允许 count() 方法无锁读取（虽然值可能过时）
-    std::atomic<size_t> count_;
+    size_t count_;  // 仅在 strand 内访问，不需要 atomic
     // next_id_ 使用 atomic：在 strand 外生成 ID，需要线程安全
     std::atomic<uint64_t> next_id_{1};
 
@@ -54,9 +53,9 @@ public:
         return asio::async_initiate<CompletionToken, void()>(
             [this](auto handler) {
                 asio::post(strand_, [this, handler = std::move(handler)]() mutable {
-                    if (count_.load(std::memory_order_relaxed) > 0) {
+                    if (count_ > 0) {
                         // 有可用的计数，立即完成
-                        count_.fetch_sub(1, std::memory_order_relaxed);
+                        --count_;
                         std::move(handler)();
                     } else {
                         // 没有计数，加入等待队列 (非可取消版本，id=0)
@@ -82,9 +81,9 @@ public:
         uint64_t waiter_id = next_id_.fetch_add(1, std::memory_order_relaxed);
         
         asio::post(strand_, [this, waiter_id, handler = std::forward<Handler>(handler)]() mutable {
-            if (count_.load(std::memory_order_relaxed) > 0) {
+            if (count_ > 0) {
                 // 有可用的计数，立即完成
-                count_.fetch_sub(1, std::memory_order_relaxed);
+                --count_;
                 std::move(handler)();
             } else {
                 // 没有计数，加入等待队列
@@ -121,7 +120,7 @@ public:
                 handler->invoke();
             } else {
                 // 没有等待者，增加计数
-                count_.fetch_add(1, std::memory_order_relaxed);
+                ++count_;
             }
         });
     }
@@ -145,7 +144,7 @@ public:
                     }
                     handler->invoke();
                 } else {
-                    count_.fetch_add(1, std::memory_order_relaxed);
+                    ++count_;
                 }
             }
         });
@@ -163,12 +162,14 @@ public:
         if (waiter_id == 0) return;  // 0 表示无效 ID
         
         asio::post(strand_, [this, waiter_id]() {
-            // O(1) 查找
+            // O(1) 查找并移除
             auto map_it = waiter_map_.find(waiter_id);
             if (map_it != waiter_map_.end()) {
                 auto list_it = map_it->second;
-                waiters_.erase(list_it);  // 立即移除，释放 handler
+                // 先从map移除
                 waiter_map_.erase(map_it);
+                // 再从list移除（会自动销毁handler，无需显式cancel）
+                waiters_.erase(list_it);
             }
         });
     }
@@ -205,8 +206,8 @@ public:
             [this](auto handler) {
                 asio::post(strand_, [this, handler = std::move(handler)]() mutable {
                     bool success = false;
-                    if (count_.load(std::memory_order_relaxed) > 0) {
-                        count_.fetch_sub(1, std::memory_order_relaxed);
+                    if (count_ > 0) {
+                        --count_;
                         success = true;
                     }
                     // 调用 completion handler
@@ -237,11 +238,10 @@ public:
     void async_try_acquire_n(size_t max_count, Callback&& callback) {
         asio::post(strand_, [this, max_count, callback = std::forward<Callback>(callback)]() mutable {
             size_t acquired = 0;
-            size_t available = count_.load(std::memory_order_relaxed);
             
-            if (available > 0) {
-                acquired = std::min(max_count, available);
-                count_.fetch_sub(acquired, std::memory_order_relaxed);
+            if (count_ > 0) {
+                acquired = std::min(max_count, count_);
+                count_ -= acquired;
             }
             
             // 在 strand 上下文中调用回调，传递实际获取的数量
@@ -250,21 +250,25 @@ public:
     }
 
     /**
-     * @brief 获取当前计数（仅用于调试/监控）
-     * 
-     * 注意：由于并发性，返回的值可能立即过时
+     * @brief 获取当前计数
      */
-    size_t count() const noexcept {
-        return count_.load(std::memory_order_relaxed);
+    template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
+    auto async_count(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
+        return asio::async_initiate<CompletionToken, void(size_t)>(
+            [this](auto handler) {
+                asio::post(strand_, [this, handler = std::move(handler)]() mutable {
+                    std::move(handler)(count_);
+                });
+            },
+            token
+        );
     }
 
     /**
-     * @brief 获取等待者数量（仅用于调试/监控）
-     * 
-     * 注意：这需要在 strand 上执行，因此是异步的
+     * @brief 获取等待者数量
      */
     template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
-    auto waiting_count(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
+    auto async_waiting_count(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
         return asio::async_initiate<CompletionToken, void(size_t)>(
             [this](auto handler) {
                 asio::post(strand_, [this, handler = std::move(handler)]() mutable {

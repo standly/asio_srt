@@ -15,16 +15,16 @@ namespace acore {
 /**
  * @brief 简化版异步队列 - 使用 async_semaphore 实现
  * 
- * 相比原版 async_queue 的优势：
- * 1. 不需要 pending_handler_ 机制
- * 2. 不需要 handler_base 类型擦除（semaphore 内部已处理）
- * 3. 代码更简洁，逻辑更清晰
- * 4. 自动支持多个等待者（semaphore 内部管理）
- * 
  * 核心思想：
  * - semaphore 的计数 = 队列中的消息数量
  * - push() → release() 增加计数
  * - read() → acquire() 等待计数 > 0
+ * 
+ * 性能注意事项：
+ * - 队列和信号量使用独立的strand（为了组件可重用性）
+ * - 读取操作需要在两个strand间切换（semaphore->queue）
+ * - 这在正确性和灵活性之间做了权衡
+ * - 对于极致性能场景，考虑直接使用shared strand或自定义实现
  */
 template <typename T>
 class async_queue : public std::enable_shared_from_this<async_queue<T>> {
@@ -39,11 +39,11 @@ public:
     /**
      * @brief 推送消息到队列
      * 
-     * 简化：不需要检查 pending_handler，semaphore 会自动唤醒等待者
+     * 如果队列已停止，消息会被静默忽略
      */
     void push(T msg) {
         asio::post(strand_, [self = this->shared_from_this(), msg = std::move(msg)]() mutable {
-            if (self->stopped_) return;
+            if (self->stopped_) return;  // 静默忽略
             
             self->queue_.push_back(std::move(msg));
             self->semaphore_.release();  // 唤醒一个等待者
@@ -52,8 +52,6 @@ public:
 
     /**
      * @brief 批量推送
-     * 
-     * 简化：直接批量 release
      */
     void push_batch(std::vector<T> messages) {
         if (messages.empty()) return;
@@ -72,8 +70,6 @@ public:
 
     /**
      * @brief 异步读取一条消息
-     * 
-     * 简化：先 acquire semaphore，再从队列取消息
      */
     template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
     auto async_read_msg(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
@@ -299,11 +295,34 @@ public:
         });
     }
 
-    bool is_stopped() const { return stopped_; }
+    /**
+     * @brief 检查队列是否已停止
+     */
+    template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
+    auto async_is_stopped(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
+        return asio::async_initiate<CompletionToken, void(bool)>(
+            [self = this->shared_from_this()](auto handler) {
+                asio::post(self->strand_, [self, handler = std::move(handler)]() mutable {
+                    std::move(handler)(self->stopped_);
+                });
+            },
+            token
+        );
+    }
 
-    size_t size() const {
-        // 注意：这是近似值，因为是异步的
-        return queue_.size();
+    /**
+     * @brief 获取队列大小
+     */
+    template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
+    auto async_size(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
+        return asio::async_initiate<CompletionToken, void(size_t)>(
+            [self = this->shared_from_this()](auto handler) {
+                asio::post(self->strand_, [self, handler = std::move(handler)]() mutable {
+                    std::move(handler)(self->queue_.size());
+                });
+            },
+            token
+        );
     }
 
 private:
@@ -311,8 +330,7 @@ private:
     asio::strand<asio::any_io_executor> strand_;
     async_semaphore semaphore_;  // ← 核心：用 semaphore 替代 pending_handler
     std::deque<T> queue_;  // 仅在 strand 内访问
-    // stopped_ 使用 atomic：允许 is_stopped() 方法无锁读取
-    std::atomic<bool> stopped_;
+    bool stopped_;  // 仅在 strand 内访问，不需要 atomic
 };
 
 } // namespace acore

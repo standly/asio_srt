@@ -32,8 +32,7 @@ private:
 
     asio::strand<executor_type> strand_;
     std::deque<std::unique_ptr<detail::void_handler_base>> waiters_;  // 仅在 strand 内访问
-    // is_set_ 使用 atomic：允许 is_set() 方法无锁读取（虽然值可能过时）
-    std::atomic<bool> is_set_{false};
+    bool is_set_{false};  // 仅在 strand 内访问，不需要 atomic
 
 public:
     explicit async_event(executor_type ex) 
@@ -50,7 +49,7 @@ public:
         return asio::async_initiate<CompletionToken, void()>(
             [this](auto handler) {
                 asio::post(strand_, [this, handler = std::move(handler)]() mutable {
-                    if (is_set_.load(std::memory_order_relaxed)) {
+                    if (is_set_) {
                         // 事件已触发，立即完成
                         std::move(handler)();
                     } else {
@@ -103,7 +102,7 @@ public:
                 
                 // 事件等待
                 asio::post(strand_, [this, completed, timer, handler_ptr]() mutable {
-                    if (is_set_.load(std::memory_order_relaxed)) {
+                    if (is_set_) {
                         // 事件已触发
                         if (!completed->exchange(true, std::memory_order_relaxed)) {
                             timer->cancel();
@@ -141,11 +140,11 @@ public:
      */
     void notify_all() {
         asio::post(strand_, [this]() {
-            if (is_set_.load(std::memory_order_relaxed)) {
+            if (is_set_) {
                 return;  // 已经触发，避免重复
             }
             
-            is_set_.store(true, std::memory_order_relaxed);
+            is_set_ = true;
 
             // 唤醒所有等待者
             while (!waiters_.empty()) {
@@ -163,24 +162,30 @@ public:
      */
     void reset() {
         asio::post(strand_, [this]() {
-            is_set_.store(false, std::memory_order_relaxed);
+            is_set_ = false;
         });
     }
 
     /**
      * @brief 检查事件是否已触发
-     * 
-     * 注意：由于并发性，返回的值可能立即过时
      */
-    bool is_set() const noexcept {
-        return is_set_.load(std::memory_order_relaxed);
+    template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
+    auto async_is_set(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
+        return asio::async_initiate<CompletionToken, void(bool)>(
+            [this](auto handler) {
+                asio::post(strand_, [this, handler = std::move(handler)]() mutable {
+                    std::move(handler)(is_set_);
+                });
+            },
+            token
+        );
     }
 
     /**
      * @brief 获取等待者数量
      */
     template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
-    auto waiting_count(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
+    auto async_waiting_count(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
         return asio::async_initiate<CompletionToken, void(size_t)>(
             [this](auto handler) {
                 asio::post(strand_, [this, handler = std::move(handler)]() mutable {

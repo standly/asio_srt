@@ -56,10 +56,10 @@ private:
 
     asio::strand<executor_type> strand_;
     std::deque<std::unique_ptr<detail::void_handler_base>> waiters_;  // 仅在 strand 内访问
-    // count_ 使用 atomic：因为 add()/done() 是同步操作，会在多线程中调用
+    // count_ 使用 atomic：add()/done() 需要同步更新（匹配 Go WaitGroup 语义）
     std::atomic<int64_t> count_{0};
-    // closed_ 使用 atomic：因为 is_closed() 和 add() 可能在多线程中调用
-    std::atomic<bool> closed_{false};
+    // closed_ 在 strand 内访问
+    bool closed_{false};
 
 public:
     /**
@@ -78,64 +78,50 @@ public:
     }
 
     /**
-     * @brief 增加计数器（同步操作）
+     * @brief 增加计数器（同步更新，异步唤醒）
      * 
      * @param delta 增加的数量（可以为负数，但结果不能为负）
      * 
-     * 注意：计数的更新是立即同步的，但唤醒等待者是异步的
-     * 这与 Go 的 WaitGroup.Add() 行为一致
+     * 语义：计数更新是同步的（立即生效），这与 Go 的 WaitGroup.Add() 一致
+     * 唤醒操作是异步的（post 到 strand）
      * 
      * 典型用法：
      * - 在启动异步任务前调用 add(1)
      * - 可以批量添加：add(10)
      * 
-     * 错误处理：如果计数变为负数或在关闭后调用，会触发断言（debug）或静默恢复（release）
+     * 错误处理：如果计数变为负数，会触发断言（debug）或恢复为0（release）
      */
     void add(int64_t delta = 1) {
         if (delta == 0) return;
         
-        // 检查是否已关闭（在debug模式断言，release模式忽略）
-        bool is_closed = closed_.load(std::memory_order_relaxed);
-        assert(!is_closed && "async_waitgroup: add() called after close()");
-        if (is_closed) {
-            return;  // release 模式下静默返回
-        }
-        
-        // 同步更新计数
-        int64_t old_count = count_.fetch_add(delta, std::memory_order_relaxed);
+        // 同步更新计数（使用 atomic）
+        int64_t old_count = count_.fetch_add(delta, std::memory_order_acq_rel);
         int64_t new_count = old_count + delta;
         
         if (new_count < 0) {
             // 错误：计数变为负数（done()调用次数超过add()）
-            // 恢复为0并断言
-            count_.store(0, std::memory_order_relaxed);
+            count_.store(0, std::memory_order_release);
             assert(false && "async_waitgroup: negative counter (done() called too many times)");
-            // release模式下，继续执行，触发所有等待者
             new_count = 0;
         }
         
         // 如果计数归零，异步唤醒所有等待者
         if (new_count == 0) {
             asio::post(strand_, [this, self = shared_from_this()]() {
-                notify_all_waiters();
+                // 双重检查：防止 0->N->0 竞态导致重复唤醒
+                // 场景：线程A看到0并post唤醒，线程B随后add(N)再done()到0
+                // 如果不检查，可能两次唤醒同一批waiter（已清空）
+                if (count_.load(std::memory_order_acquire) == 0) {
+                    notify_all_waiters();
+                }
             });
         }
     }
 
     /**
-     * @brief 减少计数器（等同于 add(-1)）（同步操作）
+     * @brief 减少计数器（等同于 add(-1)）
      * 
-     * 这是最常用的方法：任务完成时调用
-     * 
-     * 注意：计数的更新是立即同步的
-     * 
-     * 典型用法：
-     * @code
-     * asio::co_spawn(ex, [wg]() -> asio::awaitable<void> {
-     *     auto guard = defer([wg]() { wg->done(); });
-     *     // ... 做一些工作 ...
-     * }, asio::detached);
-     * @endcode
+     * 任务完成时调用
      */
     void done() {
         add(-1);
@@ -157,7 +143,7 @@ public:
         return asio::async_initiate<CompletionToken, void()>(
             [this, self = shared_from_this()](auto handler) {
                 asio::post(strand_, [this, self, handler = std::move(handler)]() mutable {
-                    if (count_.load(std::memory_order_relaxed) == 0) {
+                    if (count_.load(std::memory_order_acquire) == 0) {
                         // 计数已为 0，立即完成
                         std::move(handler)();
                     } else {
@@ -219,7 +205,7 @@ public:
                 
                 // 等待计数归零
                 asio::post(strand_, [this, self, completed, timer, handler_ptr]() mutable {
-                    if (count_.load(std::memory_order_relaxed) == 0) {
+                    if (count_.load(std::memory_order_acquire) == 0) {
                         // 计数已为 0
                         if (!completed->exchange(true, std::memory_order_relaxed)) {
                             timer->cancel();
@@ -250,41 +236,37 @@ public:
     }
 
     /**
-     * @brief 获取当前计数（仅用于调试/监控）
+     * @brief 获取当前计数
      * 
-     * 注意：由于并发性，返回的值可能立即过时
+     * 注意：返回值可能立即过时
      */
     int64_t count() const noexcept {
-        return count_.load(std::memory_order_relaxed);
+        return count_.load(std::memory_order_acquire);
     }
 
     /**
-     * @brief 重置 WaitGroup（谨慎使用！）
+     * @brief 重置 WaitGroup
      * 
      * 清除所有等待者并重置计数为 0
-     * 
-     * 注意：这是异步操作，函数会立即返回
      */
     void reset() {
         asio::post(strand_, [this, self = shared_from_this()]() {
-            count_.store(0, std::memory_order_relaxed);
-            closed_.store(false, std::memory_order_relaxed);
+            count_.store(0, std::memory_order_release);
+            closed_ = false;
             notify_all_waiters();
         });
     }
 
     /**
-     * @brief 关闭 WaitGroup，防止再次添加计数
+     * @brief 关闭 WaitGroup
      * 
-     * 用于优雅关闭场景：标记不再接受新任务
-     * 
-     * 注意：这是异步操作，函数会立即返回
+     * 标记不再接受新任务
      */
     void close() {
         asio::post(strand_, [this, self = shared_from_this()]() {
-            closed_.store(true, std::memory_order_relaxed);
+            closed_ = true;
             // 如果当前计数为 0，立即唤醒所有等待者
-            if (count_.load(std::memory_order_relaxed) == 0) {
+            if (count_.load(std::memory_order_acquire) == 0) {
                 notify_all_waiters();
             }
         });
@@ -293,8 +275,16 @@ public:
     /**
      * @brief 检查是否已关闭
      */
-    bool is_closed() const noexcept {
-        return closed_.load(std::memory_order_relaxed);
+    template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
+    auto async_is_closed(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
+        return asio::async_initiate<CompletionToken, void(bool)>(
+            [this, self = shared_from_this()](auto handler) {
+                asio::post(strand_, [this, self, handler = std::move(handler)]() mutable {
+                    std::move(handler)(closed_);
+                });
+            },
+            token
+        );
     }
 
     executor_type get_executor() const noexcept {

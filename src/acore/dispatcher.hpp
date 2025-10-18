@@ -61,10 +61,7 @@ public:
     /**
      * @brief Subscribe to messages and get an async_queue
      * 
-     * Thread-safe: can be called from any thread.
-     * 
-     * Note: Returns queue immediately, but actual subscription happens asynchronously.
-     * This is safe because publish() is also async.
+     * Returns queue immediately. Actual subscription happens asynchronously.
      */
     queue_ptr subscribe() {
         auto queue = std::make_shared<async_queue<T>>(io_context_);
@@ -81,9 +78,6 @@ public:
     /**
      * @brief Unsubscribe by subscriber ID
      * @param subscriber_id The ID returned from subscribe_with_id()
-     * 
-     * Thread-safe: can be called from any thread
-     * Time complexity: O(1)
      */
     void unsubscribe(uint64_t subscriber_id) {
         asio::post(strand_, [self = this->shared_from_this(), subscriber_id]() {
@@ -91,7 +85,6 @@ public:
             if (it != self->subscribers_.end()) {
                 it->second->stop();
                 self->subscribers_.erase(it);
-                self->subscriber_count_.fetch_sub(1, std::memory_order_relaxed);
             }
         });
     }
@@ -99,8 +92,6 @@ public:
     /**
      * @brief Subscribe and get both queue and subscriber ID
      * @return pair of (subscriber_id, queue_ptr)
-     * 
-     * Use this if you need to unsubscribe later using the ID (O(1) operation).
      */
     std::pair<uint64_t, queue_ptr> subscribe_with_id() {
         auto queue = std::make_shared<async_queue<T>>(io_context_);
@@ -108,7 +99,6 @@ public:
         
         asio::post(strand_, [self = this->shared_from_this(), id, queue]() {
             self->subscribers_[id] = queue;
-            self->subscriber_count_.fetch_add(1, std::memory_order_relaxed);
         });
         
         return {id, queue};
@@ -119,13 +109,17 @@ public:
      * @brief Publish message to all subscribers
      * @param msg Message to broadcast
      * 
-     * Thread-safe: can be called from any thread.
-     * Messages are delivered asynchronously to each subscriber's queue.
+     * 行为：消息被复制并异步推送给所有订阅者
+     * - 如果队列已停止，消息会被静默丢弃（safe）
+     * - 不会移除已停止的队列（需手动unsubscribe）
+     * 
+     * 性能：两级异步分发（dispatcher strand + 各队列strand）
+     * 高吞吐场景建议使用批量操作
      */
     void publish(const T& msg) {
         asio::post(strand_, [self = this->shared_from_this(), msg]() {
             for (auto& [id, queue] : self->subscribers_) {
-                // Each subscriber gets a copy of the message
+                // 推送到队列（已停止的队列会忽略消息）
                 queue->push(msg);
             }
         });
@@ -142,16 +136,10 @@ public:
     }
 
     /**
-     * @brief Publish multiple messages to all subscribers (batch operation)
+     * @brief Publish multiple messages (batch operation)
      * @param messages Vector of messages to broadcast
      * 
-     * Thread-safe: can be called from any thread.
      * More efficient than calling publish() multiple times.
-     * Each subscriber receives all messages.
-     * 
-     * Usage:
-     *   std::vector<Message> batch = {msg1, msg2, msg3};
-     *   dispatcher->publish_batch(batch);
      */
     void publish_batch(std::vector<T> messages) {
         if (messages.empty()) {
@@ -170,12 +158,6 @@ public:
      * @brief Publish multiple messages using iterators
      * @param begin Iterator to first message
      * @param end Iterator past last message
-     * 
-     * Thread-safe: can be called from any thread
-     * 
-     * Usage:
-     *   std::vector<Message> msgs = {msg1, msg2, msg3};
-     *   dispatcher->publish_batch(msgs.begin(), msgs.end());
      */
     template<typename Iterator>
     void publish_batch(Iterator begin, Iterator end) {
@@ -190,11 +172,6 @@ public:
     /**
      * @brief Publish multiple messages from initializer list
      * @param init_list Initializer list of messages
-     * 
-     * Thread-safe: can be called from any thread
-     * 
-     * Usage:
-     *   dispatcher->publish_batch({msg1, msg2, msg3});
      */
     void publish_batch(std::initializer_list<T> init_list) {
         if (init_list.size() == 0) {
@@ -206,32 +183,22 @@ public:
     }
 
     /**
-     * @brief Get subscriber count (async)
-     * @param callback Callback with count (called on strand)
-     * 
-     * Thread-safe: This is the ONLY safe way to get subscriber count.
-     * The synchronous version has been removed due to data race.
+     * @brief 获取订阅者数量
      */
-    void get_subscriber_count(std::function<void(size_t)> callback) {
-        asio::post(strand_, [self = this->shared_from_this(), callback = std::move(callback)]() {
-            callback(self->subscribers_.size());
-        });
-    }
-
-    /**
-     * @brief Get approximate subscriber count (lockless)
-     * 
-     * WARNING: This uses atomic counter for lock-free read, but the value
-     * may be stale. Use get_subscriber_count() if you need precise value.
-     */
-    size_t approx_subscriber_count() const noexcept {
-        return subscriber_count_.load(std::memory_order_relaxed);
+    template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
+    auto async_subscriber_count(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
+        return asio::async_initiate<CompletionToken, void(size_t)>(
+            [self = this->shared_from_this()](auto handler) {
+                asio::post(self->strand_, [self, handler = std::move(handler)]() mutable {
+                    std::move(handler)(self->subscribers_.size());
+                });
+            },
+            token
+        );
     }
 
     /**
      * @brief Clear all subscribers
-     * 
-     * Thread-safe: can be called from any thread
      */
     void clear() {
         asio::post(strand_, [self = this->shared_from_this()]() {
@@ -239,7 +206,6 @@ public:
                 queue->stop();
             }
             self->subscribers_.clear();
-            self->subscriber_count_.store(0, std::memory_order_relaxed);
         });
     }
 
@@ -247,10 +213,9 @@ private:
     asio::strand<asio::io_context::executor_type> strand_;
     asio::io_context& io_context_;
     std::unordered_map<uint64_t, queue_ptr> subscribers_;  // 仅在 strand 内访问
-    // next_id_ 使用 atomic：在 strand 外生成 ID，需要线程安全
+    // next_id_ 使用 atomic：在 strand 外生成 ID，需要线程安全（正确使用）
     std::atomic<uint64_t> next_id_;
-    // subscriber_count_ 使用 atomic：允许 approx_subscriber_count() 无锁读取近似值
-    std::atomic<size_t> subscriber_count_{0};
+    // subscriber_count_ 移除：使用 async API 而不是无锁读取近似值
 };
 
 /**
