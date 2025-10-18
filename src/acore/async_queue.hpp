@@ -196,9 +196,12 @@ public:
                 auto completed = std::make_shared<std::atomic<bool>>(false);
                 auto waiter_id = std::make_shared<uint64_t>(0);
                 
+                // 使用 shared_ptr 包装 handler，避免拷贝
+                auto handler_ptr = std::make_shared<decltype(handler)>(std::move(handler));
+                
                 // 可取消的 acquire
                 *waiter_id = self->semaphore_.acquire_cancellable(
-                    [self, completed, timer, handler, waiter_id]() mutable {
+                    [self, completed, timer, handler_ptr, waiter_id]() mutable {
                         if (completed->exchange(true)) {
                             return;  // 已超时
                         }
@@ -207,23 +210,23 @@ public:
                         
                         // 已经在共享 strand 上，可以直接访问队列
                         if (self->stopped_ || self->queue_.empty()) {
-                            handler(std::make_error_code(std::errc::operation_canceled), T{});
+                            (*handler_ptr)(std::make_error_code(std::errc::operation_canceled), T{});
                             return;
                         }
                         
                         T msg = std::move(self->queue_.front());
                         self->queue_.pop_front();
-                        handler(std::error_code{}, std::move(msg));
+                        (*handler_ptr)(std::error_code{}, std::move(msg));
                     }
                 );
                 
                 // 启动超时定时器
                 timer->expires_after(timeout);
-                timer->async_wait([self, completed, handler, waiter_id](const std::error_code& ec) mutable {
+                timer->async_wait([self, completed, handler_ptr, waiter_id](const std::error_code& ec) mutable {
                     if (!ec && !completed->exchange(true)) {
                         // 超时：取消 semaphore 等待
                         self->semaphore_.cancel(*waiter_id);
-                        handler(std::make_error_code(std::errc::timed_out), T{});
+                        (*handler_ptr)(std::make_error_code(std::errc::timed_out), T{});
                     }
                 });
             },
@@ -253,9 +256,12 @@ public:
                 auto completed = std::make_shared<std::atomic<bool>>(false);
                 auto waiter_id = std::make_shared<uint64_t>(0);
                 
+                // 使用 shared_ptr 包装 handler，避免拷贝
+                auto handler_ptr = std::make_shared<decltype(handler)>(std::move(handler));
+                
                 // 可取消的 acquire（等待第一条消息）
                 *waiter_id = self->semaphore_.acquire_cancellable(
-                    [self, max_count, completed, timer, handler, waiter_id]() mutable {
+                    [self, max_count, completed, timer, handler_ptr, waiter_id]() mutable {
                         if (completed->exchange(true)) {
                             return;  // 已超时
                         }
@@ -265,13 +271,13 @@ public:
                         // 成功获取第一条消息，尝试批量获取更多
                         self->semaphore_.async_try_acquire_n(
                             max_count - 1,  // 已经获取了1个，再尝试获取 max_count-1 个
-                            [self, handler = std::move(handler)](size_t additional_acquired) mutable {
+                            [self, handler_ptr](size_t additional_acquired) mutable {
                                 // total = 1 (第一个) + additional_acquired
                                 size_t total = 1 + additional_acquired;
                                 
                                 // 已经在共享 strand 上，可以直接访问队列
                                 if (self->stopped_) {
-                                    handler(std::make_error_code(std::errc::operation_canceled), std::vector<T>{});
+                                    (*handler_ptr)(std::make_error_code(std::errc::operation_canceled), std::vector<T>{});
                                     return;
                                 }
                                 
@@ -286,7 +292,7 @@ public:
                                     self->queue_.pop_front();
                                 }
                                 
-                                handler(std::error_code{}, std::move(messages));
+                                (*handler_ptr)(std::error_code{}, std::move(messages));
                             }
                         );
                     }
@@ -294,11 +300,11 @@ public:
                 
                 // 启动超时定时器
                 timer->expires_after(timeout);
-                timer->async_wait([self, completed, handler, waiter_id](const std::error_code& ec) mutable {
+                timer->async_wait([self, completed, handler_ptr, waiter_id](const std::error_code& ec) mutable {
                     if (!ec && !completed->exchange(true)) {
                         // 超时：取消 semaphore 等待
                         self->semaphore_.cancel(*waiter_id);
-                        handler(std::make_error_code(std::errc::timed_out), std::vector<T>{});
+                        (*handler_ptr)(std::make_error_code(std::errc::timed_out), std::vector<T>{});
                     }
                 });
             },
