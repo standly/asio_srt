@@ -47,6 +47,12 @@ class dispatcher : public std::enable_shared_from_this<dispatcher<T>> {
 public:
     using queue_ptr = std::shared_ptr<async_queue<T>>;
 
+    // 禁止拷贝和移动（设计上通过 shared_ptr 使用）
+    dispatcher(const dispatcher&) = delete;
+    dispatcher& operator=(const dispatcher&) = delete;
+    dispatcher(dispatcher&&) = delete;
+    dispatcher& operator=(dispatcher&&) = delete;
+
     /**
      * @brief Construct dispatcher
      * @param io_context ASIO io_context for async operations
@@ -113,8 +119,12 @@ public:
      * - 如果队列已停止，消息会被静默丢弃（safe）
      * - 不会移除已停止的队列（需手动unsubscribe）
      * 
-     * 性能：两级异步分发（dispatcher strand + 各队列strand）
-     * 高吞吐场景建议使用批量操作
+     * 性能注意事项：
+     * - 消息会被复制给每个订阅者（对于小消息通常很快）
+     * - 对于大消息（如大buffer），建议将消息类型定义为 shared_ptr<LargeData>
+     * - 这样只会复制指针，避免深拷贝
+     * - 两级异步分发（dispatcher strand + 各队列strand）
+     * - 高吞吐场景建议使用批量操作
      */
     void publish(const T& msg) {
         asio::post(strand_, [self = this->shared_from_this(), msg]() {

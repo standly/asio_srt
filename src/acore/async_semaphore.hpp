@@ -21,6 +21,10 @@ namespace acore {
  * 2. 支持计数（可以表示队列中的消息数量）
  * 3. 线程安全且无锁（使用 strand 保护）
  * 
+ * 性能优化：
+ * - 支持外部提供 strand（与其他组件共享），避免跨 strand 开销
+ * - 如果不提供，会创建内部 strand
+ * 
  * 注意：所有操作都是异步的，立即返回
  */
 class async_semaphore {
@@ -35,11 +39,46 @@ private:
     std::unordered_map<uint64_t, waiter_list::iterator> waiter_map_;  // 仅在 strand 内访问
     size_t count_;  // 仅在 strand 内访问，不需要 atomic
     // next_id_ 使用 atomic：在 strand 外生成 ID，需要线程安全
+    // 这是必要的，因为 acquire_cancellable() 需要立即返回 ID
     std::atomic<uint64_t> next_id_{1};
 
 public:
+    // 禁止拷贝和移动（设计上通过 shared_ptr 使用）
+    async_semaphore(const async_semaphore&) = delete;
+    async_semaphore& operator=(const async_semaphore&) = delete;
+    async_semaphore(async_semaphore&&) = delete;
+    async_semaphore& operator=(async_semaphore&&) = delete;
+
+    /**
+     * @brief 构造函数（创建内部 strand）
+     * 
+     * 使用场景：当 semaphore 独立使用时
+     * 
+     * @param ex executor（通常是 io_context.get_executor()）
+     * @param initial_count 初始计数值
+     */
     explicit async_semaphore(executor_type ex, size_t initial_count = 0) 
         : strand_(asio::make_strand(ex))
+        , count_(initial_count) 
+    {}
+    
+    /**
+     * @brief 构造函数（使用外部 strand）
+     * 
+     * 使用场景：当 semaphore 与其他组件（如 async_queue）共享 strand 时
+     * 
+     * 性能优势：
+     * - 避免跨 strand 的 post 开销
+     * - semaphore 回调直接在共享 strand 上执行，可以立即访问其他组件的状态
+     * 
+     * 重要：handler 将在提供的 strand 上执行，而不是在调用者的 executor 上。
+     * 用户必须自己处理 executor 切换（如果需要）。
+     * 
+     * @param strand 外部提供的 strand
+     * @param initial_count 初始计数值
+     */
+    explicit async_semaphore(asio::strand<executor_type> strand, size_t initial_count = 0) 
+        : strand_(strand)
         , count_(initial_count) 
     {}
 

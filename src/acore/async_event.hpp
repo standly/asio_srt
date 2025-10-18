@@ -35,6 +35,12 @@ private:
     bool is_set_{false};  // 仅在 strand 内访问，不需要 atomic
 
 public:
+    // 禁止拷贝和移动（设计上通过 shared_ptr 使用）
+    async_event(const async_event&) = delete;
+    async_event& operator=(const async_event&) = delete;
+    async_event(async_event&&) = delete;
+    async_event& operator=(async_event&&) = delete;
+
     explicit async_event(executor_type ex) 
         : strand_(asio::make_strand(ex)) 
     {}

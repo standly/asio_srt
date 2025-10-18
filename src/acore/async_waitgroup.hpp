@@ -56,12 +56,16 @@ private:
 
     asio::strand<executor_type> strand_;
     std::deque<std::unique_ptr<detail::void_handler_base>> waiters_;  // 仅在 strand 内访问
-    // count_ 使用 atomic：add()/done() 需要同步更新（匹配 Go WaitGroup 语义）
-    std::atomic<int64_t> count_{0};
-    // closed_ 在 strand 内访问
-    bool closed_{false};
+    // count_ 在 strand 内访问，不需要 atomic（异步语义，所有更新都通过 strand 序列化）
+    int64_t count_{0};  // 仅在 strand 内访问
 
 public:
+    // 禁止拷贝和移动（设计上通过 shared_ptr 使用）
+    async_waitgroup(const async_waitgroup&) = delete;
+    async_waitgroup& operator=(const async_waitgroup&) = delete;
+    async_waitgroup(async_waitgroup&&) = delete;
+    async_waitgroup& operator=(async_waitgroup&&) = delete;
+
     /**
      * @brief 构造函数
      * 
@@ -78,44 +82,40 @@ public:
     }
 
     /**
-     * @brief 增加计数器（同步更新，异步唤醒）
+     * @brief 增加计数器（异步操作）
      * 
      * @param delta 增加的数量（可以为负数，但结果不能为负）
      * 
-     * 语义：计数更新是同步的（立即生效），这与 Go 的 WaitGroup.Add() 一致
-     * 唤醒操作是异步的（post 到 strand）
+     * 语义：计数更新是异步的（通过 strand 序列化），这符合异步编程模式
      * 
      * 典型用法：
      * - 在启动异步任务前调用 add(1)
      * - 可以批量添加：add(10)
+     * 
+     * 性能建议：
+     * - 每次调用 add() 都会 post 一个任务到 strand
+     * - 如果要启动 N 个任务，使用 add(N) 比调用 N 次 add(1) 更高效
+     * - 批量操作可以减少 post 开销和 lambda 对象创建
      * 
      * 错误处理：如果计数变为负数，会触发断言（debug）或恢复为0（release）
      */
     void add(int64_t delta = 1) {
         if (delta == 0) return;
         
-        // 同步更新计数（使用 atomic）
-        int64_t old_count = count_.fetch_add(delta, std::memory_order_acq_rel);
-        int64_t new_count = old_count + delta;
-        
-        if (new_count < 0) {
-            // 错误：计数变为负数（done()调用次数超过add()）
-            count_.store(0, std::memory_order_release);
-            assert(false && "async_waitgroup: negative counter (done() called too many times)");
-            new_count = 0;
-        }
-        
-        // 如果计数归零，异步唤醒所有等待者
-        if (new_count == 0) {
-            asio::post(strand_, [this, self = shared_from_this()]() {
-                // 双重检查：防止 0->N->0 竞态导致重复唤醒
-                // 场景：线程A看到0并post唤醒，线程B随后add(N)再done()到0
-                // 如果不检查，可能两次唤醒同一批waiter（已清空）
-                if (count_.load(std::memory_order_acquire) == 0) {
-                    notify_all_waiters();
-                }
-            });
-        }
+        asio::post(strand_, [this, self = shared_from_this(), delta]() {
+            count_ += delta;
+            
+            if (count_ < 0) {
+                // 错误：计数变为负数（done()调用次数超过add()）
+                assert(false && "async_waitgroup: negative counter (done() called too many times)");
+                count_ = 0;
+            }
+            
+            // 如果计数归零，唤醒所有等待者
+            if (count_ == 0) {
+                notify_all_waiters();
+            }
+        });
     }
 
     /**
@@ -143,7 +143,7 @@ public:
         return asio::async_initiate<CompletionToken, void()>(
             [this, self = shared_from_this()](auto handler) {
                 asio::post(strand_, [this, self, handler = std::move(handler)]() mutable {
-                    if (count_.load(std::memory_order_acquire) == 0) {
+                    if (count_ == 0) {
                         // 计数已为 0，立即完成
                         std::move(handler)();
                     } else {
@@ -205,7 +205,7 @@ public:
                 
                 // 等待计数归零
                 asio::post(strand_, [this, self, completed, timer, handler_ptr]() mutable {
-                    if (count_.load(std::memory_order_acquire) == 0) {
+                    if (count_ == 0) {
                         // 计数已为 0
                         if (!completed->exchange(true, std::memory_order_relaxed)) {
                             timer->cancel();
@@ -236,51 +236,20 @@ public:
     }
 
     /**
-     * @brief 获取当前计数
+     * @brief 异步获取当前计数
      * 
-     * 注意：返回值可能立即过时
-     */
-    int64_t count() const noexcept {
-        return count_.load(std::memory_order_acquire);
-    }
-
-    /**
-     * @brief 重置 WaitGroup
-     * 
-     * 清除所有等待者并重置计数为 0
-     */
-    void reset() {
-        asio::post(strand_, [this, self = shared_from_this()]() {
-            count_.store(0, std::memory_order_release);
-            closed_ = false;
-            notify_all_waiters();
-        });
-    }
-
-    /**
-     * @brief 关闭 WaitGroup
-     * 
-     * 标记不再接受新任务
-     */
-    void close() {
-        asio::post(strand_, [this, self = shared_from_this()]() {
-            closed_ = true;
-            // 如果当前计数为 0，立即唤醒所有等待者
-            if (count_.load(std::memory_order_acquire) == 0) {
-                notify_all_waiters();
-            }
-        });
-    }
-
-    /**
-     * @brief 检查是否已关闭
+     * 设计说明：
+     * - 使用异步接口而非同步的 count() 方法
+     * - 原因：同步方法返回的值可能在下一时刻就失效（竞态条件）
+     * - 异步接口强制用户意识到这是一个时间点的快照，仅在回调时刻有效
+     * - 这避免了给用户虚假的线程安全感
      */
     template<typename CompletionToken = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>>
-    auto async_is_closed(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
-        return asio::async_initiate<CompletionToken, void(bool)>(
+    auto async_count(CompletionToken&& token = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>{}) {
+        return asio::async_initiate<CompletionToken, void(int64_t)>(
             [this, self = shared_from_this()](auto handler) {
                 asio::post(strand_, [this, self, handler = std::move(handler)]() mutable {
-                    std::move(handler)(closed_);
+                    std::move(handler)(count_);
                 });
             },
             token
