@@ -142,7 +142,23 @@ public:
      * @brief 触发事件并唤醒所有等待者
      * 
      * 注意：这是广播操作，所有等待者都会被唤醒
-     * 这是异步操作，函数会立即返回
+     * 
+     * ⚠️ 重要：这是异步操作，函数会立即返回
+     * 
+     * 与 std::condition_variable::notify_all() 不同：
+     * - 此方法是异步的（post 到 strand）
+     * - 实际的通知会延迟执行
+     * 
+     * 如果在 notify_all() 后立即调用 reset()，由于两者都是异步的，
+     * 执行顺序取决于 strand 的调度顺序。
+     * 
+     * 正确用法（如果需要确保顺序）：
+     * @code
+     * event->notify_all();
+     * // 使用异步API确保顺序
+     * co_await event->async_is_set(use_awaitable);  // 等待状态更新
+     * event->reset();
+     * @endcode
      */
     void notify_all() {
         asio::post(strand_, [this]() {
@@ -164,7 +180,17 @@ public:
     /**
      * @brief 重置事件状态为未触发
      * 
-     * 注意：这是异步操作，函数会立即返回
+     * ⚠️ 重要：这是异步操作，函数会立即返回
+     * 
+     * 如果在 notify_all() 后立即调用 reset()，
+     * 由于两者都是异步的，执行顺序不确定。
+     * 
+     * 如果需要确保顺序，使用异步API：
+     * @code
+     * event->notify_all();
+     * co_await event->async_is_set(use_awaitable);
+     * event->reset();
+     * @endcode
      */
     void reset() {
         asio::post(strand_, [this]() {

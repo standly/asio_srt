@@ -113,7 +113,20 @@ public:
      * @brief 可取消的等待信号量
      * 
      * 返回一个 waiter_id，可用于取消操作
-     * 如果立即获取成功，handler 会被调用，waiter_id = 0
+     * 
+     * 重要说明：
+     * - waiter_id 立即返回（同步）
+     * - 但 handler 的执行是异步的（post 到 strand）
+     * - 如果 semaphore 有可用计数，handler 会很快执行
+     * - 如果没有可用计数，handler 会加入等待队列
+     * - 即使 handler 已经执行，waiter_id 仍然有效（只是 cancel() 会是 no-op）
+     * 
+     * 用法：
+     * @code
+     * auto id = sem.acquire_cancellable([]() { work(); });
+     * // ...
+     * sem.cancel(id);  // 可以安全调用，即使 handler 已执行
+     * @endcode
      */
     template<typename Handler>
     uint64_t acquire_cancellable(Handler&& handler) {

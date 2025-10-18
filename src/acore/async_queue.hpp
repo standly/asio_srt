@@ -9,6 +9,7 @@
 #include <memory>
 #include <vector>
 #include <chrono>
+#include <cassert>
 
 namespace acore {
 
@@ -165,7 +166,9 @@ public:
                                 std::vector<T> messages;
                                 messages.reserve(total);
                                 
-                                for (size_t i = 0; i < total && !self->queue_.empty(); ++i) {
+                                for (size_t i = 0; i < total; ++i) {
+                                    // Invariant: semaphore count 应该等于 queue size
+                                    assert(!self->queue_.empty() && "BUG: semaphore/queue count mismatch");
                                     messages.push_back(std::move(self->queue_.front()));
                                     self->queue_.pop_front();
                                 }
@@ -276,7 +279,9 @@ public:
                                 std::vector<T> messages;
                                 messages.reserve(total);
                                 
-                                for (size_t i = 0; i < total && !self->queue_.empty(); ++i) {
+                                for (size_t i = 0; i < total; ++i) {
+                                    // Invariant: semaphore count 应该等于 queue size
+                                    assert(!self->queue_.empty() && "BUG: semaphore/queue count mismatch");
                                     messages.push_back(std::move(self->queue_.front()));
                                     self->queue_.pop_front();
                                 }
@@ -304,14 +309,25 @@ public:
     /**
      * @brief 停止队列
      * 
-     * 取消所有等待的读操作
+     * 行为：
+     * - 设置 stopped_ 标志，阻止后续的 push 和 read
+     * - 取消所有等待中的 read 操作
+     * - 保留队列中的残留消息（不清空）
+     * 
+     * 设计说明：
+     * - 不清空 queue_ 是为了保持与 semaphore.count 的同步
+     * - Invariant: semaphore.count + waiters.size == queue.size
+     * - 如果清空 queue 但不重置 semaphore.count，会破坏这个不变量
+     * - stopped_ 标志已经阻止了所有操作，残留消息无害
+     * - 残留消息会在 async_queue 析构时自动清理
      */
     void stop() {
         asio::post(strand_, [self = this->shared_from_this()]() {
             self->stopped_ = true;
-            self->queue_.clear();
+            // 不清空 queue_，保持与 semaphore 的 count 同步
+            // 残留消息会在析构时清理
             
-            // 取消所有等待者
+            // 取消所有等待的 acquire 操作
             self->semaphore_.cancel_all();
         });
     }

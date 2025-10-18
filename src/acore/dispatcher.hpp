@@ -67,7 +67,24 @@ public:
     /**
      * @brief Subscribe to messages and get an async_queue
      * 
-     * Returns queue immediately. Actual subscription happens asynchronously.
+     * 返回队列立即可用，但订阅操作是异步的。
+     * 
+     * ⚠️ 重要：
+     * - 队列立即返回，可以开始读取
+     * - 但实际添加到 subscribers_ 是异步的（post 到 strand）
+     * - 因此，订阅后立即 publish 的消息可能不会被新订阅者接收
+     * 
+     * 使用建议：
+     * - 如果需要确保接收所有消息，订阅后稍等（使用异步API）
+     * - 或者在订阅完成后再开始 publish
+     * 
+     * 示例（确保订阅完成）：
+     * @code
+     * auto queue = disp->subscribe();
+     * // 等待订阅完成
+     * size_t count = co_await disp->async_subscriber_count(use_awaitable);
+     * // 现在可以安全地依赖接收消息
+     * @endcode
      */
     queue_ptr subscribe() {
         auto queue = std::make_shared<async_queue<T>>(io_context_);
@@ -75,7 +92,6 @@ public:
         
         asio::post(strand_, [self = this->shared_from_this(), id, queue]() {
             self->subscribers_[id] = queue;
-            self->subscriber_count_.fetch_add(1, std::memory_order_relaxed);
         });
         
         return queue;
