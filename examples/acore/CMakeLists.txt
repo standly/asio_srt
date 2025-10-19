@@ -56,6 +56,23 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND CMAKE_CXX_COMPILER_VERSION VERS
     target_link_libraries(acore_waitgroup_simple PRIVATE acore pthread)
     target_compile_features(acore_waitgroup_simple PRIVATE cxx_std_20)
     
+    # New async components examples
+    add_executable(acore_mutex_example mutex_example.cpp)
+    target_link_libraries(acore_mutex_example PRIVATE acore pthread)
+    target_compile_features(acore_mutex_example PRIVATE cxx_std_20)
+    
+    add_executable(acore_timer_example timer_example.cpp)
+    target_link_libraries(acore_timer_example PRIVATE acore pthread)
+    target_compile_features(acore_timer_example PRIVATE cxx_std_20)
+    
+    add_executable(acore_rate_limiter_example rate_limiter_example.cpp)
+    target_link_libraries(acore_rate_limiter_example PRIVATE acore pthread)
+    target_compile_features(acore_rate_limiter_example PRIVATE cxx_std_20)
+    
+    add_executable(acore_barrier_latch_example barrier_latch_example.cpp)
+    target_link_libraries(acore_barrier_latch_example PRIVATE acore pthread)
+    target_compile_features(acore_barrier_latch_example PRIVATE cxx_std_20)
+    
     message(STATUS "Building acore examples with C++20 coroutine support")
 else()
     message(STATUS "Building acore examples (C++20 coroutine examples disabled, need GCC 10+ or Clang 10+)")
