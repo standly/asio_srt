@@ -7,29 +7,32 @@
 | 指南 | 说明 | 适合人群 |
 |------|------|----------|
 | [快速入门](QUICK_START.md) | 5分钟快速开始使用 | 🌟 新用户必读 |
+| [ACORE 组件指南](ACORE_GUIDE.md) | 异步组件完整使用指南 | ⭐ 推荐阅读 |
 | [SRT Socket 指南](SRT_SOCKET_GUIDE.md) | SRT Socket 详细使用方法 | 中级用户 |
 | [回调和选项](CALLBACK_AND_OPTIONS_GUIDE.md) | 回调函数和配置选项详解 | 高级用户 |
 
-## 📚 专题指南
+## 📚 ACORE 异步组件
 
-### [Broadcast (广播)](bcast/)
+**[ACORE 完整指南](ACORE_GUIDE.md)** - 所有 12 个异步组件的使用说明 ⭐⭐⭐
 
-广播功能的使用指南：
-- [BCAST_GUIDE.md](bcast/BCAST_GUIDE.md) - 广播功能完整指南
-- [BATCH_OPERATIONS.md](bcast/BATCH_OPERATIONS.md) - 批量操作指南
-- [TIMEOUT_FEATURES.md](bcast/TIMEOUT_FEATURES.md) - 超时功能使用
-- [README.md](bcast/README.md) - Broadcast 概览
+包含：
+- 🔒 同步原语（mutex, semaphore, barrier）
+- 📢 事件通知（event, auto_reset_event）
+- 🔢 计数器（waitgroup, latch）
+- 📬 消息传递（queue, dispatcher）
+- ⏱️ 定时器（periodic_timer, timer）
+- 🚦 流量控制（rate_limiter）
 
 ## 🎯 学习路径
 
 ### 新手路径 (0 → 基础)
 1. 阅读 [快速入门](QUICK_START.md)
-2. 运行示例代码（`examples/` 目录）
-3. 阅读 [SRT Socket 指南](SRT_SOCKET_GUIDE.md)
+2. 学习 [ACORE 组件指南](ACORE_GUIDE.md) ⭐
+3. 运行示例代码（`examples/acore/` 目录）
 
 ### 进阶路径 (基础 → 熟练)
-1. 学习 [回调和选项](CALLBACK_AND_OPTIONS_GUIDE.md)
-2. 阅读 [ACORE API 文档](../api/acore/)
+1. 阅读 [SRT Socket 指南](SRT_SOCKET_GUIDE.md)
+2. 学习 [回调和选项](CALLBACK_AND_OPTIONS_GUIDE.md)
 3. 了解 [错误处理设计](../design/error-handling/)
 
 ### 高级路径 (熟练 → 专家)
@@ -38,6 +41,34 @@
 3. 贡献代码和文档
 
 ## 💡 常见场景
+
+### 场景：我想保护共享资源
+→ 使用 **async_mutex**  
+→ 阅读 [ACORE 组件指南](ACORE_GUIDE.md#async_mutex)  
+→ 参考 `examples/acore/mutex_example.cpp`
+
+### 场景：我想限制并发数
+→ 使用 **async_semaphore**  
+→ 阅读 [ACORE 组件指南](ACORE_GUIDE.md#async_semaphore)
+
+### 场景：我想限制API调用频率
+→ 使用 **async_rate_limiter**  
+→ 阅读 [ACORE 组件指南](ACORE_GUIDE.md#async_rate_limiter)  
+→ 参考 `examples/acore/rate_limiter_example.cpp`
+
+### 场景：我想周期性发送心跳
+→ 使用 **async_periodic_timer**  
+→ 阅读 [ACORE 组件指南](ACORE_GUIDE.md#async_periodic_timer)  
+→ 参考 `examples/acore/timer_example.cpp`
+
+### 场景：我想实现消息队列
+→ 使用 **async_queue** 或 **dispatcher**  
+→ 阅读 [ACORE 组件指南](ACORE_GUIDE.md#消息传递)  
+→ 参考 `examples/acore/example.cpp`
+
+### 场景：我想等待多个任务完成
+→ 使用 **async_waitgroup** 或 **async_latch**  
+→ 阅读 [ACORE 组件指南](ACORE_GUIDE.md#计数器)
 
 ### 场景：我想发送视频流
 → 阅读 [SRT Socket 指南](SRT_SOCKET_GUIDE.md)  
@@ -50,10 +81,6 @@
 ### 场景：我想配置日志
 → 阅读 [日志系统指南](../design/logging/LOGGING_ENHANCED.md)  
 → 参考 `examples/custom_logging_example.cpp`
-
-### 场景：我想使用异步队列
-→ 阅读 [ACORE 异步原语](../api/acore/ASYNC_PRIMITIVES.md)  
-→ 查看 `examples/acore/` 中的示例
 
 ## 🔧 实用工具
 

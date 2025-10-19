@@ -26,16 +26,31 @@
 
 各组件的详细 API 文档：
 
-#### ACORE - 异步核心组件
-- [组件概览](api/acore/README.md) - ACORE 组件总览
-- [异步原语](api/acore/ASYNC_PRIMITIVES.md) - Semaphore、Queue、Event、WaitGroup
+#### ACORE - 异步核心组件 (12 个组件)
+
+**核心文档** (必读):
+- **[src/acore/README.md](../src/acore/README.md)** - 所有组件完整 API ⭐⭐⭐
+- **[guides/ACORE_GUIDE.md](guides/ACORE_GUIDE.md)** - 使用指南 ⭐⭐⭐
+
+详细文档:
+- [异步原语](api/acore/ASYNC_PRIMITIVES.md) - 原有组件详解
 - [取消机制](api/acore/CANCELLATION_SUPPORT.md) - 操作取消支持
 - [协程模式](api/acore/COROUTINE_ONLY.md) - C++20 协程 API
 - [WaitGroup 用法](api/acore/WAITGROUP_USAGE.md) - WaitGroup 详细指南
-- [组件分析](api/acore/) - 组件实现分析（ASYNC_EVENT_ANALYSIS、ASYNC_QUEUE_SIMPLIFICATION 等）
+- [组件分析](api/acore/) - 实现细节分析
+
+新增组件 (2025-10-19):
+- async_mutex - 异步互斥锁
+- async_periodic_timer - 周期定时器
+- async_rate_limiter - 速率限制器
+- async_barrier - 同步屏障
+- async_auto_reset_event - 自动重置事件
+- async_latch - 一次性计数器
 
 #### ASRT - SRT 封装
-- 待完善
+- [SRT Socket 指南](guides/SRT_SOCKET_GUIDE.md)
+- [错误处理](design/error-handling/)
+- [日志系统](design/logging/)
 
 ### 3️⃣ [设计文档](design/) - 架构设计
 

@@ -185,30 +185,42 @@ asio_srt/
 │   │   ├── srt_reactor.h     # Reactor 接口定义
 │   │   └── srt_reactor.cpp   # Reactor 实现
 │   └── aentry/               # 应用入口（待完成）
-├── tests/                    # 测试代码
-│   ├── acore/                # acore 模块测试
-│   │   ├── test_async_event.cpp
-│   │   ├── test_async_queue.cpp
-│   │   ├── test_async_semaphore.cpp
-│   │   ├── test_dispatcher.cpp
-│   │   ├── test_waitgroup.cpp
-│   │   └── ...
-│   ├── test_srt_reactor.cpp
-│   └── ...
-├── examples/                 # 示例代码
-│   ├── acore/                # acore 示例
+├── tests/                    # 测试代码（按模块分类）
+│   ├── acore/                # ACORE 测试（13 个，100+ 用例）
+│   │   ├── quick_test.sh     # 快速测试脚本 ⭐
+│   │   ├── test_async_mutex.cpp
+│   │   ├── test_async_periodic_timer.cpp
+│   │   ├── test_async_rate_limiter.cpp
+│   │   ├── test_async_barrier.cpp
+│   │   ├── test_async_auto_reset_event.cpp
+│   │   ├── test_async_latch.cpp
+│   │   └── ... (其他测试)
+│   └── asrt/                 # ASRT 测试
+│       └── test_srt_reactor.cpp
+├── examples/                 # 示例代码（按模块分类）
+│   ├── acore/                # ACORE 示例（16 个）
+│   │   ├── mutex_example.cpp          # 互斥锁示例 ✨
+│   │   ├── timer_example.cpp          # 定时器示例 ✨
+│   │   ├── rate_limiter_example.cpp   # 限流器示例 ✨
+│   │   ├── barrier_latch_example.cpp  # 屏障示例 ✨
 │   │   ├── example.cpp
 │   │   ├── advanced_example.cpp
-│   │   └── ...
-│   ├── srt_server_example.cpp
-│   ├── srt_client_example.cpp
-│   └── ...
-└── docs/                     # 📖 文档目录（已重新组织）
-    ├── api/                  # API 参考文档
-    ├── guides/               # 使用指南
-    ├── design/               # 设计文档
-    └── development/          # 开发文档
-        └── acore/            # acore 开发文档
+│   │   ├── coroutine_example.cpp
+│   │   └── ... (更多示例)
+│   ├── srt_server_example.cpp         # SRT 服务器
+│   ├── srt_client_example.cpp         # SRT 客户端
+│   ├── srt_streaming_example.cpp      # 流媒体传输
+│   └── ... (更多 SRT 示例)
+└── docs/                     # 📖 文档目录（60+ 篇）
+    ├── INDEX.md              # 完整文档索引 ⭐
+    ├── api/                  # API 参考文档（10+ 篇）
+    ├── guides/               # 使用指南（8+ 篇）
+    ├── design/               # 设计文档（15+ 篇）
+    ├── development/          # 开发文档（20+ 篇）
+    │   ├── acore/            # ACORE 开发文档 ⭐
+    │   ├── reorganization/   # 项目重组文档
+    │   └── code-reviews/     # 代码审查报告
+    └── archive/              # 归档文档
 ```
 
 ## ⚙️ 核心实现细节
