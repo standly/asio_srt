@@ -95,4 +95,6 @@ add_test(NAME SrtReactorTests COMMAND test_srt_reactor)
 add_test(NAME LoggingEnhancementTests COMMAND test_logging_enhancement)
 add_test(NAME SrtSocketAcceptorTests COMMAND test_srt_socket_acceptor)
 
+# Add acore tests subdirectory
+add_subdirectory(acore)
 

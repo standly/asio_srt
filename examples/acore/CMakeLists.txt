@@ -52,6 +52,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND CMAKE_CXX_COMPILER_VERSION VERS
     target_link_libraries(acore_queue_benchmark PRIVATE acore pthread)
     target_compile_features(acore_queue_benchmark PRIVATE cxx_std_20)
     
+    add_executable(acore_waitgroup_simple example_waitgroup_simple.cpp)
+    target_link_libraries(acore_waitgroup_simple PRIVATE acore pthread)
+    target_compile_features(acore_waitgroup_simple PRIVATE cxx_std_20)
+    
     message(STATUS "Building acore examples with C++20 coroutine support")
 else()
     message(STATUS "Building acore examples (C++20 coroutine examples disabled, need GCC 10+ or Clang 10+)")

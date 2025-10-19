@@ -5,3 +5,33 @@ cmake-build-debug
 depends/build
 depends/resolved
 depends/__pycache__
+
+# 编译产物
+*.o
+*.a
+*.so
+*.dylib
+
+# 测试可执行文件（保留源文件）
+test_*
+!test_*.cpp
+!test_*.h
+!test_*.hpp
+
+# 示例可执行文件（保留源文件）
+*_example
+*_test
+*_benchmark
+!*_example.cpp
+!*_test.cpp
+!*_benchmark.cpp
+!*_example.h
+!*_test.h
+!*_benchmark.h
+
+# acore 示例可执行文件
+acore_*
+!acore_*.cpp
+
+# 构建脚本生成的文件
+*.sh.log
