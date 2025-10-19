@@ -1,280 +1,256 @@
-# acore - Asynchronous Publish-Subscribe Pattern
+# ACORE - 异步核心组件 API
 
-基于 ASIO strand 实现的异步、无锁发布订阅模式，支持 **C++20 协程**。
+ACORE (Asio Core) 是基于 Boost.Asio 构建的高级异步原语库，提供了一组强大的并发编程工具。
 
-## 核心特性
+## 📦 组件列表
 
-- ⚡ **无锁设计**：使用 ASIO strand，零锁开销
-- 🔄 **协程支持**：用同步的方式写异步代码
-- 🚀 **高性能**：微秒级延迟，10万+ 消息/秒
-- 🔒 **线程安全**：所有 API 都可从任意线程调用
-- 📦 **批量操作**：批量 push/publish，性能提升 10-100 倍
-- ⏱️ **超时支持**：防止无限等待
+| 组件 | 头文件 | 说明 |
+|------|--------|------|
+| **Async Semaphore** | `async_semaphore.hpp` | 异步信号量，控制并发访问 |
+| **Async Queue** | `async_queue.hpp` | 线程安全的异步队列 |
+| **Async Event** | `async_event.hpp` | 异步事件通知机制 |
+| **Async WaitGroup** | `async_waitgroup.hpp` | 类似 Go 的 WaitGroup，等待一组操作完成 |
+| **Dispatcher** | `dispatcher.hpp` | 任务调度器 |
+| **Handler Traits** | `handler_traits.hpp` | 处理器类型萃取工具 |
 
-## 快速示例
+## 📖 核心文档
+
+### 入门文档
+- **[异步原语总览](ASYNC_PRIMITIVES.md)** - 所有组件的使用说明
+- **[协程模式](COROUTINE_ONLY.md)** - C++20 协程 API 说明
+- **[取消机制](CANCELLATION_SUPPORT.md)** - 操作取消的详细说明
+- **[WaitGroup 用法](WAITGROUP_USAGE.md)** - WaitGroup 详细使用指南
+
+### 高级分析
+- **[Event 组件分析](ASYNC_EVENT_ANALYSIS.md)** - Event 实现分析
+- **[Event 重构说明](ASYNC_EVENT_REFACTORED.md)** - Event 重构文档
+- **[Queue 简化说明](ASYNC_QUEUE_SIMPLIFICATION.md)** - Queue 简化设计
+- **[Semaphore 详解](ASYNC_SEMAPHORE_EXPLAINED.md)** - Semaphore 深度解析
+
+## 🚀 快速开始
+
+### 异步信号量（控制并发）
 
 ```cpp
-#include "acore/dispatcher.hpp"
-#include <asio.hpp>
+#include "acore/async_semaphore.hpp"
 #include <asio/co_spawn.hpp>
 #include <asio/use_awaitable.hpp>
 
-using asio::awaitable;
-using asio::co_spawn;
-using asio::detached;
-using asio::use_awaitable;
+asio::awaitable<void> worker(acore::async_semaphore& sem, int id) {
+    // 获取信号量（最多允许 N 个并发）
+    co_await sem.async_acquire(asio::use_awaitable);
+    
+    std::cout << "Worker " << id << " is working\n";
+    co_await asio::steady_timer(
+        co_await asio::this_coro::executor, 
+        std::chrono::seconds(1)
+    ).async_wait(asio::use_awaitable);
+    
+    // 释放信号量
+    sem.release();
+    std::cout << "Worker " << id << " finished\n";
+}
 
-awaitable<void> subscriber(auto queue) {
+int main() {
+    asio::io_context io;
+    acore::async_semaphore sem(io, 3); // 最多 3 个并发
+    
+    // 启动 10 个工作协程（但同时只有 3 个在运行）
+    for (int i = 0; i < 10; ++i) {
+        asio::co_spawn(io, worker(sem, i), asio::detached);
+    }
+    
+    io.run();
+}
+```
+
+### 异步队列（生产者-消费者）
+
+```cpp
+#include "acore/async_queue.hpp"
+
+asio::awaitable<void> producer(acore::async_queue<int>& queue) {
+    for (int i = 0; i < 10; ++i) {
+        queue.push(i);  // 线程安全的推送
+        co_await asio::steady_timer(
+            co_await asio::this_coro::executor,
+            std::chrono::milliseconds(100)
+        ).async_wait(asio::use_awaitable);
+    }
+    queue.close();  // 关闭队列
+}
+
+asio::awaitable<void> consumer(acore::async_queue<int>& queue) {
     while (true) {
-        auto [ec, msg] = co_await queue->async_read_msg(use_awaitable);
-        if (ec) break;
-        std::cout << "收到: " << msg << std::endl;
+        try {
+            auto value = co_await queue.async_pop(asio::use_awaitable);
+            std::cout << "Got: " << value << "\n";
+        } catch (const std::runtime_error&) {
+            break;  // 队列已关闭且为空
+        }
     }
 }
 
 int main() {
     asio::io_context io;
-    auto dispatcher = acore::make_dispatcher<std::string>(io);
+    acore::async_queue<int> queue(io);
     
-    auto queue = dispatcher->subscribe();
-    co_spawn(io, subscriber(queue), detached);
-    
-    dispatcher->publish("Hello, World!");
+    asio::co_spawn(io, producer(queue), asio::detached);
+    asio::co_spawn(io, consumer(queue), asio::detached);
     
     io.run();
-    return 0;
 }
 ```
 
-## 核心组件
-
-### dispatcher<T> - 消息分发器
+### 异步事件（通知机制）
 
 ```cpp
-auto dispatcher = acore::make_dispatcher<Message>(io_context);
+#include "acore/async_event.hpp"
 
-// 订阅
-auto queue = dispatcher->subscribe();
-
-// 发布
-dispatcher->publish(message);
-dispatcher->publish_batch({msg1, msg2, msg3});  // 批量发布
-
-// 管理
-dispatcher->unsubscribe(queue);
-dispatcher->clear();
-```
-
-### async_queue<T> - 异步消息队列
-
-```cpp
-// 读取消息
-auto [ec, msg] = co_await queue->async_read_msg(use_awaitable);
-auto [ec, msgs] = co_await queue->async_read_msgs(10, use_awaitable);
-
-// 带超时的读取
-auto [ec, msg] = co_await queue->async_read_msg_with_timeout(5s, use_awaitable);
-
-// 推送消息
-queue->push(message);
-queue->push_batch({msg1, msg2, msg3});  // 批量推送
-```
-
-### async_waitgroup - 异步等待组
-
-类似 Go 的 `sync.WaitGroup`，用于等待一组异步任务完成。
-
-```cpp
-auto wg = std::make_shared<acore::async_waitgroup>(io_context.get_executor());
-
-// 启动 3 个异步任务
-wg->add(3);
-for (int i = 0; i < 3; ++i) {
-    asio::co_spawn(io_context, [wg, i]() -> asio::awaitable<void> {
-        co_await do_async_work(i);
-        wg->done();  // 完成一个任务
-    }, asio::detached);
+asio::awaitable<void> waiter(acore::async_event& event, int id) {
+    std::cout << "Waiter " << id << " is waiting...\n";
+    co_await event.async_wait(asio::use_awaitable);
+    std::cout << "Waiter " << id << " received signal!\n";
 }
 
-// 等待所有任务完成
-co_await wg->wait(asio::use_awaitable);
-std::cout << "所有任务完成！\n";
-
-// 支持超时等待
-bool completed = co_await wg->wait_for(30s, asio::use_awaitable);
-```
-
-**详细文档**: 见 [WAITGROUP_USAGE.md](WAITGROUP_USAGE.md)
-
-### async_semaphore - 异步信号量
-
-用于控制并发访问数量。
-
-```cpp
-auto sem = std::make_shared<acore::async_semaphore>(ex, 3);  // 最多 3 个并发
-
-// 获取信号量
-co_await sem->acquire(asio::use_awaitable);
-// ... 使用资源 ...
-sem->release();  // 释放
-
-// 取消支持
-uint64_t id = sem->acquire_cancellable([](){ /* callback */ });
-sem->cancel(id);  // 取消等待
-```
-
-### async_event - 异步事件
-
-手动重置事件，用于广播通知。
-
-```cpp
-auto event = std::make_shared<acore::async_event>(ex);
-
-// 等待事件触发
-co_await event->wait(asio::use_awaitable);
-
-// 触发事件（唤醒所有等待者）
-event->notify_all();
-
-// 重置事件
-event->reset();
-```
-
-## 主要特性
-
-### 1. 协程接口
-
-用同步的方式写异步代码：
-
-```cpp
-while (true) {
-    auto [ec, msg] = co_await queue->async_read_msg(use_awaitable);
-    if (ec) break;
-    process(msg);
+int main() {
+    asio::io_context io;
+    acore::async_event event(io);
+    
+    // 启动多个等待者
+    for (int i = 0; i < 5; ++i) {
+        asio::co_spawn(io, waiter(event, i), asio::detached);
+    }
+    
+    // 2秒后触发事件
+    asio::steady_timer timer(io, std::chrono::seconds(2));
+    timer.async_wait([&](auto) {
+        event.set();  // 唤醒所有等待者
+    });
+    
+    io.run();
 }
 ```
 
-### 2. 超时支持
-
-防止无限等待：
+### WaitGroup（等待一组任务）
 
 ```cpp
-using namespace std::chrono_literals;
+#include "acore/async_waitgroup.hpp"
 
-auto [ec, msg] = co_await queue->async_read_msg_with_timeout(5s, use_awaitable);
-if (ec == asio::error::timed_out) {
-    handle_timeout();
+asio::awaitable<void> task(acore::async_waitgroup& wg, int id) {
+    std::cout << "Task " << id << " started\n";
+    
+    co_await asio::steady_timer(
+        co_await asio::this_coro::executor,
+        std::chrono::seconds(1)
+    ).async_wait(asio::use_awaitable);
+    
+    std::cout << "Task " << id << " done\n";
+    wg.done();  // 标记任务完成
+}
+
+asio::awaitable<void> coordinator() {
+    auto ex = co_await asio::this_coro::executor;
+    acore::async_waitgroup wg(ex);
+    
+    // 启动 5 个任务
+    for (int i = 0; i < 5; ++i) {
+        wg.add(1);  // 增加计数
+        asio::co_spawn(ex, task(wg, i), asio::detached);
+    }
+    
+    // 等待所有任务完成
+    co_await wg.wait(asio::use_awaitable);
+    std::cout << "All tasks completed!\n";
+}
+
+int main() {
+    asio::io_context io;
+    asio::co_spawn(io, coordinator(), asio::detached);
+    io.run();
 }
 ```
 
-### 3. 批量操作
+## ✨ 主要特性
 
-显著提升性能（10-100倍）：
+### 1. C++20 协程原生支持
+所有组件都支持 `co_await`，提供现代化的异步编程体验。
+
+### 2. 操作取消支持
+所有异步操作都支持 Asio 的取消机制（cancellation slots）。
 
 ```cpp
-// 批量发布
-std::vector<Message> batch = {msg1, msg2, msg3};
-dispatcher->publish_batch(batch);
+asio::cancellation_signal sig;
+auto token = asio::bind_cancellation_slot(
+    sig.slot(),
+    asio::use_awaitable
+);
 
-// 批量读取
-auto [ec, messages] = co_await queue->async_read_msgs(100, use_awaitable);
+// 在其他地方取消
+sig.emit(asio::cancellation_type::all);
 ```
 
-## 编译要求
+详见：[取消机制文档](CANCELLATION_SUPPORT.md)
 
-- **C++20** 或更高（协程支持）
-- ASIO (standalone 或 Boost.Asio)
-- 支持协程的编译器：GCC 10+, Clang 10+, MSVC 2019 16.8+
+### 3. 线程安全
+- `async_queue` - 完全线程安全
+- `async_semaphore` - 完全线程安全
+- `async_event` - 完全线程安全
+- `async_waitgroup` - 完全线程安全
 
-## 集成
+### 4. 零拷贝和移动语义
+所有组件都优化了移动语义，支持高效的对象传递。
 
-### CMake
+### 5. 头文件库
+ACORE 是纯头文件库，只需包含相应的头文件即可使用。
 
-```cmake
-add_subdirectory(src/acore)
-target_link_libraries(your_target PRIVATE acore)
-```
+## 📝 使用要求
 
-### 直接编译
+- **C++ 标准**: C++20（协程支持）
+- **依赖库**: Boost.Asio >= 1.70 或独立 ASIO >= 1.18
+- **编译器**: 
+  - GCC 10+
+  - Clang 12+
+  - MSVC 2019+
+
+## 🧪 测试
+
+每个组件都有对应的测试程序：
 
 ```bash
-g++ -std=c++20 -fcoroutines your_code.cpp -lpthread -o app
+cd src/acore
+
+# 编译所有测试
+./build_all_tests.sh
+
+# 运行所有测试
+./run_all_tests.sh
+
+# 或单独运行
+./test_async_semaphore
+./test_async_queue
+./test_async_event
+./test_waitgroup
 ```
 
-## 文档
+## 📚 详细文档
 
-- **[完整使用指南](../../docs/acore/acore_GUIDE.md)** - 详细的 API 文档和最佳实践
-- **[批量操作](../../docs/acore/BATCH_OPERATIONS.md)** - 批量操作详解
-- **[超时功能](../../docs/acore/TIMEOUT_FEATURES.md)** - 超时机制详解
+- **[ASYNC_PRIMITIVES.md](ASYNC_PRIMITIVES.md)** - 所有组件的详细 API 文档
+- **[CANCELLATION_SUPPORT.md](CANCELLATION_SUPPORT.md)** - 取消机制详解
+- **[COROUTINE_ONLY.md](COROUTINE_ONLY.md)** - 协程专用 API 说明
+- **[WAITGROUP_USAGE.md](WAITGROUP_USAGE.md)** - WaitGroup 完整指南
 
-## 示例代码
+## 💡 最佳实践
 
-查看 `examples/acore/` 目录：
+1. **优先使用 `use_awaitable`** - 在协程中获得最佳体验
+2. **合理使用取消机制** - 避免资源泄漏
+3. **注意 WaitGroup 的 add/done 配对** - 类似 Go 的规则
+4. **Queue 使用完毕记得 close()** - 通知消费者结束
+5. **Semaphore 的 acquire/release 要配对** - 或使用 RAII
 
-- `coroutine_example.cpp` - 协程基础示例
-- `timeout_example.cpp` - 超时功能示例
-- `batch_example.cpp` - 批量操作示例
-- `real_world_example.cpp` - 实战场景（聊天室、股票）
-- `benchmark.cpp` - 性能测试
+## 🔗 相关链接
 
-## 设计原理
-
-### 无锁设计
-
-使用 ASIO `strand` 序列化操作，避免锁：
-
-```cpp
-asio::post(strand_, [self = this->shared_from_this()]() {
-    // 所有操作在 strand 上串行执行
-    // 天然线程安全，无需锁
-});
-```
-
-### 每订阅者独立队列
-
-```
-发布者                     订阅者队列
-         ┌──> Queue 1 ──> 订阅者 1
-Publish ─┼──> Queue 2 ──> 订阅者 2
-         └──> Queue 3 ──> 订阅者 3
-```
-
-订阅者之间完全隔离，互不影响。
-
-## 性能特征
-
-- **吞吐量**：100,000+ 消息/秒
-- **延迟**：< 100 微秒（平均）
-- **可扩展性**：支持 100+ 订阅者
-- **批量加速**：10-100 倍性能提升
-
-## 适用场景
-
-### dispatcher + async_queue
-- 实时消息系统
-- 事件驱动架构
-- 微服务通信
-- WebSocket 广播
-- 日志聚合
-- 数据流处理
-
-### async_waitgroup
-- 等待多个异步任务完成
-- 优雅关闭服务器（等待请求处理完毕）
-- 批量操作协调（如批量下载、批量处理）
-- Worker Pool 生命周期管理
-- 分阶段任务流水线
-
-### async_semaphore
-- 限制并发数（如连接池、线程池）
-- 资源访问控制
-- 流量控制和背压
-
-### async_event
-- 状态变化通知
-- 多订阅者事件广播
-- 条件同步
-
-## License
-
-与项目主许可证相同。
+- [源代码](../../../src/acore/) - ACORE 源码目录
+- [示例代码](../../../examples/acore/) - 实际使用示例
+- [设计文档](../../design/) - 设计决策文档
+- [项目主页](../../../README.md) - ASIO-SRT 项目主页
