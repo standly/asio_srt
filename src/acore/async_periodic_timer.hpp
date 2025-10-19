@@ -7,6 +7,8 @@
 #include <chrono>
 #include <memory>
 #include <atomic>
+#include <deque>
+#include "handler_traits.hpp"
 
 namespace acore {
 
@@ -51,6 +53,7 @@ private:
     duration_type period_;
     std::atomic<bool> running_{true};
     std::atomic<bool> paused_{false};
+    std::deque<std::unique_ptr<detail::void_handler_base>> paused_waiters_; // 暂停时的等待队列（仅在 strand 内访问）
     
 public:
     // 禁止拷贝和移动
@@ -119,21 +122,15 @@ public:
         return asio::async_initiate<CompletionToken, void()>(
             [self = shared_from_this()](auto handler) {
                 asio::post(self->strand_, [self, handler = std::move(handler)]() mutable {
-                    if (!self->running_ || self->paused_.load(std::memory_order_acquire)) {
-                        // 停止或暂停时不执行（静默忽略）
+                    if (!self->running_) {
+                        // 已停止：立即完成（让协程退出）
+                        std::move(handler)();
                         return;
                     }
                     
-                    // 设置定时器
-                    self->timer_->expires_after(self->period_);
-                    
-                    self->timer_->async_wait(
-                        [self, handler = std::move(handler)](const std::error_code& ec) mutable {
-                            if (!ec && self->running_ && !self->paused_.load(std::memory_order_acquire)) {
-                                handler();
-                            }
-                        }
-                    );
+                    // 包装成可保存的handler
+                    auto handler_ptr = std::make_unique<detail::void_handler_impl<decltype(handler)>>(std::move(handler));
+                    self->schedule_wait(std::move(handler_ptr));
                 });
             },
             token
@@ -166,9 +163,19 @@ public:
     
     /**
      * @brief 恢复定时器
+     * 
+     * 重新调度所有暂停时等待的操作
      */
     void resume() {
         paused_.store(false, std::memory_order_release);
+        asio::post(strand_, [self = shared_from_this()]() {
+            // 重新调度所有暂停的等待者
+            while (!self->paused_waiters_.empty()) {
+                auto handler_ptr = std::move(self->paused_waiters_.front());
+                self->paused_waiters_.pop_front();
+                self->schedule_wait(std::move(handler_ptr));
+            }
+        });
     }
     
     /**
@@ -216,6 +223,49 @@ public:
     
     executor_type get_executor() const noexcept {
         return strand_.get_inner_executor();
+    }
+
+private:
+    /**
+     * @brief 调度一个等待操作（内部方法）
+     * 
+     * 如果暂停，加入暂停队列；否则启动定时器
+     */
+    void schedule_wait(std::unique_ptr<detail::void_handler_base> handler_ptr) {
+        if (paused_.load(std::memory_order_acquire)) {
+            // 暂停中：加入暂停队列，等待 resume()
+            paused_waiters_.push_back(std::move(handler_ptr));
+            return;
+        }
+        
+        // 启动定时器
+        timer_->expires_after(period_);
+        timer_->async_wait(
+            [self = shared_from_this(), handler_ptr = std::move(handler_ptr)](const std::error_code& ec) mutable {
+                if (!self->running_) {
+                    // 已停止：调用 handler 让协程退出
+                    handler_ptr->invoke();
+                    return;
+                }
+                
+                if (ec == asio::error::operation_aborted && self->paused_.load(std::memory_order_acquire)) {
+                    // 被暂停取消：加入暂停队列
+                    asio::post(self->strand_, [self, handler_ptr = std::move(handler_ptr)]() mutable {
+                        self->paused_waiters_.push_back(std::move(handler_ptr));
+                    });
+                    return;
+                }
+                
+                if (ec) {
+                    // 其他错误：仍然调用 handler（让协程继续或处理错误）
+                    handler_ptr->invoke();
+                    return;
+                }
+                
+                // 定时器正常触发：调用 handler
+                handler_ptr->invoke();
+            }
+        );
     }
 };
 

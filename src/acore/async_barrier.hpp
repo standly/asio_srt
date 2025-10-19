@@ -55,7 +55,7 @@ private:
     using executor_type = asio::any_io_executor;
     
     asio::strand<executor_type> strand_;
-    size_t const num_participants_;  // 参与者数量（不可修改）
+    size_t num_participants_;        // 参与者数量
     size_t arrived_count_{0};        // 已到达数量（仅在 strand 内访问）
     std::deque<std::unique_ptr<detail::void_handler_base>> waiters_;  // 等待队列
     std::atomic<uint64_t> generation_{0};  // 当前代（用于区分不同轮次）
@@ -210,10 +210,19 @@ public:
      */
     void arrive_and_drop() {
         asio::post(strand_, [self = shared_from_this()]() {
+            // 关键：必须先减少参与者数，再增加到达数
+            // 否则会过早触发屏障
+            // 
+            // 例如：num_participants=3, arrived_count=1
+            // 如果先++arrived_count（变成2），再--num_participants（变成2），
+            // 则 arrived_count >= num_participants 为true，错误触发
+            //
+            // 正确做法：先--num_participants（变成2），再++arrived_count（变成2），
+            // 但这时还没有第3个人到达，不应该触发
+            //
+            // 更正确的做法：同时减少两者，效果相当于只减少 num_participants
+            self->num_participants_--;
             self->arrived_count_++;
-            
-            // 减少总参与者数（强制转换为非 const）
-            const_cast<size_t&>(self->num_participants_)--;
             
             if (self->arrived_count_ >= self->num_participants_) {
                 // 所有参与者都到达了，唤醒所有等待者

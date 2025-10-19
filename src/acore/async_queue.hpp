@@ -168,7 +168,9 @@ public:
                                 
                                 for (size_t i = 0; i < total; ++i) {
                                     // Invariant: semaphore count 应该等于 queue size
-                                    assert(!self->queue_.empty() && "BUG: semaphore/queue count mismatch");
+                                    if (self->queue_.empty()) {
+                                        throw std::logic_error("ACORE async_queue: semaphore/queue count mismatch");
+                                    }
                                     messages.push_back(std::move(self->queue_.front()));
                                     self->queue_.pop_front();
                                 }
@@ -287,7 +289,9 @@ public:
                                 
                                 for (size_t i = 0; i < total; ++i) {
                                     // Invariant: semaphore count 应该等于 queue size
-                                    assert(!self->queue_.empty() && "BUG: semaphore/queue count mismatch");
+                                    if (self->queue_.empty()) {
+                                        throw std::logic_error("ACORE async_queue: semaphore/queue count mismatch");
+                                    }
                                     messages.push_back(std::move(self->queue_.front()));
                                     self->queue_.pop_front();
                                 }

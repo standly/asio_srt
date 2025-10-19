@@ -155,8 +155,9 @@ public:
         if (new_count < 0) {
             // 错误：计数变为负数（done()调用次数超过add()）
             count_.store(0, std::memory_order_release);
-            assert(false && "async_waitgroup: negative counter (done() called too many times)");
-            return;  // release build: assert是no-op，恢复count=0后返回
+            // 不使用 assert（Release 模式会被编译掉），而是抛出异常
+            // 这是内部不变量错误，表明用户使用不当
+            throw std::logic_error("async_waitgroup: negative counter (done() called more times than add())");
         }
         
         // 如果计数归零，异步唤醒所有等待者

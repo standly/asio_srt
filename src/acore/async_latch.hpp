@@ -55,6 +55,7 @@ private:
     std::atomic<int64_t> count_;  // 计数器（原子操作）
     std::deque<std::unique_ptr<detail::void_handler_base>> waiters_;  // 等待队列（仅在 strand 内访问）
     std::atomic<bool> triggered_{false};  // 是否已触发（原子操作）
+    std::atomic<uint64_t> error_count_{0};  // 错误计数（count_down 导致下溢的次数）
 
 public:
     // 禁止拷贝和移动
@@ -115,9 +116,11 @@ public:
         int64_t new_count = old_count - n;
         
         if (new_count < 0) {
-            // 错误：计数变为负数
+            // 错误：计数变为负数（count_down 调用次数过多）
             count_.store(0, std::memory_order_release);
-            assert(false && "async_latch: count_down() called too many times");
+            error_count_.fetch_add(1, std::memory_order_relaxed);  // 记录错误
+            // 注意：不使用 assert，因为在 Release 模式下会被编译掉
+            // 用户可以通过 get_error_count() 检查是否有错误
             new_count = 0;
         }
         
@@ -163,7 +166,7 @@ public:
                     
                     if (new_count < 0) {
                         self->count_.store(0, std::memory_order_release);
-                        assert(false && "async_latch: arrive_and_wait() count underflow");
+                        self->error_count_.fetch_add(1, std::memory_order_relaxed);  // 记录错误
                         new_count = 0;
                     }
                     
@@ -252,6 +255,18 @@ public:
      */
     bool is_ready() const noexcept {
         return triggered_.load(std::memory_order_acquire);
+    }
+    
+    /**
+     * @brief 获取错误计数
+     * 
+     * 返回 count_down() 导致计数下溢的次数
+     * 如果返回非零值，表示 count_down() 被调用的次数超过了初始计数
+     * 
+     * @return 错误次数（0 表示无错误）
+     */
+    uint64_t get_error_count() const noexcept {
+        return error_count_.load(std::memory_order_relaxed);
     }
     
     /**

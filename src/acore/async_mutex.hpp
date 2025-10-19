@@ -11,6 +11,11 @@
 
 namespace acore {
 
+// Type alias for default completion token (简化模板参数)
+namespace detail {
+    using default_token_t = asio::default_completion_token_t<asio::strand<asio::any_io_executor>>;
+}
+
 // 前向声明
 class async_mutex;
 
