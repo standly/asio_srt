@@ -43,6 +43,37 @@ target_link_libraries(test_cancellation PRIVATE acore pthread)
 target_compile_features(test_cancellation PRIVATE cxx_std_20)
 target_include_directories(test_cancellation PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
+# New async components tests
+add_executable(test_async_mutex test_async_mutex.cpp)
+target_link_libraries(test_async_mutex PRIVATE acore pthread)
+target_compile_features(test_async_mutex PRIVATE cxx_std_20)
+target_include_directories(test_async_mutex PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+add_executable(test_async_periodic_timer test_async_periodic_timer.cpp)
+target_link_libraries(test_async_periodic_timer PRIVATE acore pthread)
+target_compile_features(test_async_periodic_timer PRIVATE cxx_std_20)
+target_include_directories(test_async_periodic_timer PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+add_executable(test_async_rate_limiter test_async_rate_limiter.cpp)
+target_link_libraries(test_async_rate_limiter PRIVATE acore pthread)
+target_compile_features(test_async_rate_limiter PRIVATE cxx_std_20)
+target_include_directories(test_async_rate_limiter PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+add_executable(test_async_barrier test_async_barrier.cpp)
+target_link_libraries(test_async_barrier PRIVATE acore pthread)
+target_compile_features(test_async_barrier PRIVATE cxx_std_20)
+target_include_directories(test_async_barrier PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+add_executable(test_async_auto_reset_event test_async_auto_reset_event.cpp)
+target_link_libraries(test_async_auto_reset_event PRIVATE acore pthread)
+target_compile_features(test_async_auto_reset_event PRIVATE cxx_std_20)
+target_include_directories(test_async_auto_reset_event PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+add_executable(test_async_latch test_async_latch.cpp)
+target_link_libraries(test_async_latch PRIVATE acore pthread)
+target_compile_features(test_async_latch PRIVATE cxx_std_20)
+target_include_directories(test_async_latch PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
 # Add tests to CTest
 add_test(NAME AsyncEventTests COMMAND test_async_event)
 add_test(NAME AsyncQueueTests COMMAND test_async_queue)
@@ -52,5 +83,13 @@ add_test(NAME WaitGroupTests COMMAND test_waitgroup)
 add_test(NAME WaitGroupRaceTests COMMAND test_waitgroup_race)
 add_test(NAME CancellationTests COMMAND test_cancellation)
 
-message(STATUS "acore tests configured")
+# New async components tests
+add_test(NAME AsyncMutexTests COMMAND test_async_mutex)
+add_test(NAME AsyncPeriodicTimerTests COMMAND test_async_periodic_timer)
+add_test(NAME AsyncRateLimiterTests COMMAND test_async_rate_limiter)
+add_test(NAME AsyncBarrierTests COMMAND test_async_barrier)
+add_test(NAME AsyncAutoResetEventTests COMMAND test_async_auto_reset_event)
+add_test(NAME AsyncLatchTests COMMAND test_async_latch)
+
+message(STATUS "acore tests configured (13 test executables)")
 
