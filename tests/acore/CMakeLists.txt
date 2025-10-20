@@ -74,6 +74,12 @@ target_link_libraries(test_async_latch PRIVATE acore pthread)
 target_compile_features(test_async_latch PRIVATE cxx_std_20)
 target_include_directories(test_async_latch PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
+# Shared strand tests (simplified version)
+add_executable(test_shared_strand test_shared_strand_simple.cpp)
+target_link_libraries(test_shared_strand PRIVATE acore pthread gtest gtest_main)
+target_compile_features(test_shared_strand PRIVATE cxx_std_20)
+target_include_directories(test_shared_strand PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
 # Add tests to CTest
 add_test(NAME AsyncEventTests COMMAND test_async_event)
 add_test(NAME AsyncQueueTests COMMAND test_async_queue)
@@ -91,5 +97,8 @@ add_test(NAME AsyncBarrierTests COMMAND test_async_barrier)
 add_test(NAME AsyncAutoResetEventTests COMMAND test_async_auto_reset_event)
 add_test(NAME AsyncLatchTests COMMAND test_async_latch)
 
-message(STATUS "acore tests configured (13 test executables)")
+# Shared strand tests
+add_test(NAME SharedStrandTests COMMAND test_shared_strand)
+
+message(STATUS "acore tests configured (14 test executables)")
 

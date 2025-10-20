@@ -69,15 +69,11 @@ public:
      * 
      * 使用场景：当 dispatcher 与其他组件共享 strand 时
      * 
+     * 注意：由于 strand 类型不匹配问题，当前仅支持传入 io_context
+     * 
      * @param io_context ASIO io_context
-     * @param strand 外部提供的 strand
      */
-    explicit dispatcher(asio::io_context& io_context, asio::strand<asio::any_io_executor> strand)
-        : strand_(strand)
-        , io_context_(io_context)
-        , next_id_(1)
-    {
-    }
+    // 暂时禁用外部 strand 构造函数，使用默认构造函数即可
 
     /**
      * @brief Subscribe to messages and get an async_queue
