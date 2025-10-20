@@ -63,7 +63,7 @@ public:
     async_auto_reset_event& operator=(async_auto_reset_event&&) = delete;
     
     /**
-     * @brief 构造函数
+     * @brief 构造函数（创建内部 strand）- io_context 版本
      * @param io_ctx ASIO io_context
      * @param initially_set 初始状态（默认未设置）
      */
@@ -75,12 +75,29 @@ public:
     {}
     
     /**
-     * @brief 构造函数（使用 executor）
+     * @brief 构造函数（创建内部 strand）- executor 版本
+     * @param ex executor
+     * @param initially_set 初始状态（默认未设置）
      */
     explicit async_auto_reset_event(
         executor_type ex,
         bool initially_set = false)
         : strand_(asio::make_strand(ex))
+        , signal_count_(initially_set ? 1 : 0)
+    {}
+    
+    /**
+     * @brief 构造函数（使用外部 strand）
+     * 
+     * 使用场景：当 event 与其他组件共享 strand 时
+     * 
+     * @param strand 外部提供的 strand
+     * @param initially_set 初始状态（默认未设置）
+     */
+    explicit async_auto_reset_event(
+        asio::strand<executor_type> strand,
+        bool initially_set = false)
+        : strand_(strand)
         , signal_count_(initially_set ? 1 : 0)
     {}
     

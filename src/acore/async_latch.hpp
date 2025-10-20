@@ -65,7 +65,7 @@ public:
     async_latch& operator=(async_latch&&) = delete;
     
     /**
-     * @brief 构造函数
+     * @brief 构造函数（创建内部 strand）- io_context 版本
      * @param io_ctx ASIO io_context
      * @param initial_count 初始计数（必须 >= 0）
      */
@@ -84,10 +84,33 @@ public:
     }
     
     /**
-     * @brief 构造函数（使用 executor）
+     * @brief 构造函数（创建内部 strand）- executor 版本
+     * @param ex executor
+     * @param initial_count 初始计数（必须 >= 0）
      */
     explicit async_latch(executor_type ex, int64_t initial_count)
         : strand_(asio::make_strand(ex))
+        , count_(initial_count)
+    {
+        if (initial_count < 0) {
+            throw std::invalid_argument("initial_count must be >= 0");
+        }
+        
+        if (initial_count == 0) {
+            triggered_.store(true, std::memory_order_release);
+        }
+    }
+    
+    /**
+     * @brief 构造函数（使用外部 strand）
+     * 
+     * 使用场景：当 latch 与其他组件共享 strand 时
+     * 
+     * @param strand 外部提供的 strand
+     * @param initial_count 初始计数（必须 >= 0）
+     */
+    explicit async_latch(asio::strand<executor_type> strand, int64_t initial_count)
+        : strand_(strand)
         , count_(initial_count)
     {
         if (initial_count < 0) {

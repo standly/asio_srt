@@ -108,7 +108,11 @@ public:
     }
     
     /**
-     * @brief 构造函数（使用 executor）
+     * @brief 构造函数（创建内部 strand）- executor 版本
+     * @param ex executor
+     * @param rate 速率（每个周期的令牌数）
+     * @param period 周期时长
+     * @param capacity 桶容量（默认等于 rate）
      */
     template<typename Rep, typename Period>
     explicit async_rate_limiter(
@@ -117,6 +121,38 @@ public:
         std::chrono::duration<Rep, Period> period,
         size_t capacity = 0)
         : strand_(asio::make_strand(ex))
+        , refill_timer_(std::make_unique<asio::steady_timer>(strand_))
+        , rate_(rate)
+        , period_(std::chrono::duration_cast<duration_type>(period))
+        , capacity_(capacity == 0 ? rate : capacity)
+        , tokens_(static_cast<double>(capacity == 0 ? rate : capacity))
+        , last_refill_(clock_type::now())
+    {
+        if (rate == 0) {
+            throw std::invalid_argument("rate must be greater than 0");
+        }
+        if (this->capacity_ < rate) {
+            throw std::invalid_argument("capacity must be >= rate");
+        }
+    }
+    
+    /**
+     * @brief 构造函数（使用外部 strand）
+     * 
+     * 使用场景：当 rate_limiter 与其他组件共享 strand 时
+     * 
+     * @param strand 外部提供的 strand
+     * @param rate 速率（每个周期的令牌数）
+     * @param period 周期时长
+     * @param capacity 桶容量（默认等于 rate）
+     */
+    template<typename Rep, typename Period>
+    explicit async_rate_limiter(
+        asio::strand<executor_type> strand,
+        size_t rate,
+        std::chrono::duration<Rep, Period> period,
+        size_t capacity = 0)
+        : strand_(strand)
         , refill_timer_(std::make_unique<asio::steady_timer>(strand_))
         , rate_(rate)
         , period_(std::chrono::duration_cast<duration_type>(period))

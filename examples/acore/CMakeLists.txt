@@ -73,6 +73,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND CMAKE_CXX_COMPILER_VERSION VERS
     target_link_libraries(acore_barrier_latch_example PRIVATE acore pthread)
     target_compile_features(acore_barrier_latch_example PRIVATE cxx_std_20)
     
+    add_executable(acore_shared_strand_example shared_strand_example.cpp)
+    target_link_libraries(acore_shared_strand_example PRIVATE acore pthread)
+    target_compile_features(acore_shared_strand_example PRIVATE cxx_std_20)
+    
     message(STATUS "Building acore examples with C++20 coroutine support")
 else()
     message(STATUS "Building acore examples (C++20 coroutine examples disabled, need GCC 10+ or Clang 10+)")

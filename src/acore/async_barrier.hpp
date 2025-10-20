@@ -68,7 +68,7 @@ public:
     async_barrier& operator=(async_barrier&&) = delete;
     
     /**
-     * @brief 构造函数
+     * @brief 构造函数（创建内部 strand）- io_context 版本
      * @param io_ctx ASIO io_context
      * @param num_participants 参与者数量（必须 > 0）
      */
@@ -82,10 +82,29 @@ public:
     }
     
     /**
-     * @brief 构造函数（使用 executor）
+     * @brief 构造函数（创建内部 strand）- executor 版本
+     * @param ex executor
+     * @param num_participants 参与者数量（必须 > 0）
      */
     explicit async_barrier(executor_type ex, size_t num_participants)
         : strand_(asio::make_strand(ex))
+        , num_participants_(num_participants)
+    {
+        if (num_participants == 0) {
+            throw std::invalid_argument("num_participants must be > 0");
+        }
+    }
+    
+    /**
+     * @brief 构造函数（使用外部 strand）
+     * 
+     * 使用场景：当 barrier 与其他组件共享 strand 时
+     * 
+     * @param strand 外部提供的 strand
+     * @param num_participants 参与者数量（必须 > 0）
+     */
+    explicit async_barrier(asio::strand<executor_type> strand, size_t num_participants)
+        : strand_(strand)
         , num_participants_(num_participants)
     {
         if (num_participants == 0) {

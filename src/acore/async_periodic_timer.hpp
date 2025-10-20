@@ -77,13 +77,32 @@ public:
     {}
     
     /**
-     * @brief 构造函数（使用 executor）
+     * @brief 构造函数（创建内部 strand）- executor 版本
+     * @param ex executor
+     * @param period 定时器周期
      */
     template<typename Rep, typename Period>
     explicit async_periodic_timer(
         executor_type ex,
         std::chrono::duration<Rep, Period> period)
         : strand_(asio::make_strand(ex))
+        , timer_(std::make_unique<asio::steady_timer>(strand_))
+        , period_(std::chrono::duration_cast<duration_type>(period))
+    {}
+    
+    /**
+     * @brief 构造函数（使用外部 strand）
+     * 
+     * 使用场景：当 timer 与其他组件共享 strand 时
+     * 
+     * @param strand 外部提供的 strand
+     * @param period 定时器周期
+     */
+    template<typename Rep, typename Period>
+    explicit async_periodic_timer(
+        asio::strand<executor_type> strand,
+        std::chrono::duration<Rep, Period> period)
+        : strand_(strand)
         , timer_(std::make_unique<asio::steady_timer>(strand_))
         , period_(std::chrono::duration_cast<duration_type>(period))
     {}

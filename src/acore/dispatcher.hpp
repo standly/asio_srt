@@ -54,11 +54,26 @@ public:
     dispatcher& operator=(dispatcher&&) = delete;
 
     /**
-     * @brief Construct dispatcher
+     * @brief 构造函数（创建内部 strand）
      * @param io_context ASIO io_context for async operations
      */
     explicit dispatcher(asio::io_context& io_context)
         : strand_(asio::make_strand(io_context))
+        , io_context_(io_context)
+        , next_id_(1)
+    {
+    }
+    
+    /**
+     * @brief 构造函数（使用外部 strand）
+     * 
+     * 使用场景：当 dispatcher 与其他组件共享 strand 时
+     * 
+     * @param io_context ASIO io_context
+     * @param strand 外部提供的 strand
+     */
+    explicit dispatcher(asio::io_context& io_context, asio::strand<asio::any_io_executor> strand)
+        : strand_(strand)
         , io_context_(io_context)
         , next_id_(1)
     {

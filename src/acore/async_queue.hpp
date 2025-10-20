@@ -39,12 +39,47 @@ public:
     async_queue(async_queue&&) = delete;
     async_queue& operator=(async_queue&&) = delete;
 
+    /**
+     * @brief 构造函数（创建内部 strand）
+     * 
+     * 使用场景：当 queue 独立使用时
+     * 
+     * @param io_context IO 上下文
+     */
     explicit async_queue(asio::io_context& io_context)
         : io_context_(io_context)
         , strand_(asio::make_strand(io_context.get_executor()))
         , queue_()
         , stopped_(false)
         , semaphore_(strand_, 0)  // 共享 strand，初始计数为 0（必须最后初始化）
+    {}
+    
+    /**
+     * @brief 构造函数（使用外部 strand）
+     * 
+     * 使用场景：当 queue 与其他组件共享 strand 时
+     * 
+     * 性能优势：
+     * - queue 和 semaphore 共享 strand（已优化）
+     * - 与其他组件共享 strand，进一步减少开销
+     * 
+     * 示例：
+     * @code
+     * auto shared_strand = asio::make_strand(io_context);
+     * auto queue = std::make_shared<async_queue<int>>(io_context, shared_strand);
+     * auto mutex = std::make_shared<async_mutex>(shared_strand);
+     * // queue 和 mutex 共享 strand，零开销协作
+     * @endcode
+     * 
+     * @param io_context IO 上下文
+     * @param strand 外部提供的 strand
+     */
+    explicit async_queue(asio::io_context& io_context, asio::strand<asio::any_io_executor> strand)
+        : io_context_(io_context)
+        , strand_(strand)
+        , queue_()
+        , stopped_(false)
+        , semaphore_(strand_, 0)  // 共享外部 strand
     {}
 
     /**

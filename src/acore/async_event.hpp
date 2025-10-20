@@ -41,8 +41,23 @@ public:
     async_event(async_event&&) = delete;
     async_event& operator=(async_event&&) = delete;
 
+    /**
+     * @brief 构造函数（创建内部 strand）
+     * @param ex executor
+     */
     explicit async_event(executor_type ex) 
         : strand_(asio::make_strand(ex)) 
+    {}
+    
+    /**
+     * @brief 构造函数（使用外部 strand）
+     * 
+     * 使用场景：当 event 与其他组件共享 strand 时
+     * 
+     * @param strand 外部提供的 strand
+     */
+    explicit async_event(asio::strand<executor_type> strand)
+        : strand_(strand)
     {}
 
     /**

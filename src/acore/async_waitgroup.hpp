@@ -99,13 +99,30 @@ public:
     async_waitgroup& operator=(async_waitgroup&&) = delete;
 
     /**
-     * @brief 构造函数
+     * @brief 构造函数（创建内部 strand）
      * 
      * @param ex executor（通常是 io_context.get_executor()）
      * @param initial_count 初始计数（默认为 0）
      */
     explicit async_waitgroup(executor_type ex, int64_t initial_count = 0) 
         : strand_(asio::make_strand(ex))
+        , count_(initial_count)
+    {
+        if (initial_count < 0) {
+            throw std::invalid_argument("initial_count cannot be negative");
+        }
+    }
+    
+    /**
+     * @brief 构造函数（使用外部 strand）
+     * 
+     * 使用场景：当 waitgroup 与其他组件共享 strand 时
+     * 
+     * @param strand 外部提供的 strand
+     * @param initial_count 初始计数（默认为 0）
+     */
+    explicit async_waitgroup(asio::strand<executor_type> strand, int64_t initial_count = 0)
+        : strand_(strand)
         , count_(initial_count)
     {
         if (initial_count < 0) {

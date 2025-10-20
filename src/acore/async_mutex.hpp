@@ -116,11 +116,37 @@ public:
     async_mutex& operator=(async_mutex&&) = delete;
     
     /**
-     * @brief 构造函数
+     * @brief 构造函数（创建内部 strand）
+     * 
+     * 使用场景：当 mutex 独立使用时
+     * 
      * @param ex executor（通常是 io_context.get_executor()）
      */
     explicit async_mutex(executor_type ex)
         : strand_(asio::make_strand(ex))
+    {}
+    
+    /**
+     * @brief 构造函数（使用外部 strand）
+     * 
+     * 使用场景：当 mutex 与其他组件共享 strand 时
+     * 
+     * 性能优势：
+     * - 避免跨 strand 的 post 开销
+     * - 多个相关组件可以在同一个 strand 上高效协作
+     * 
+     * 示例：
+     * @code
+     * auto shared_strand = asio::make_strand(io_context);
+     * auto mutex = std::make_shared<async_mutex>(shared_strand);
+     * auto queue = std::make_shared<async_queue<int>>(shared_strand);
+     * // mutex 和 queue 共享 strand，零开销协作
+     * @endcode
+     * 
+     * @param strand 外部提供的 strand
+     */
+    explicit async_mutex(asio::strand<executor_type> strand)
+        : strand_(strand)
     {}
     
     /**
