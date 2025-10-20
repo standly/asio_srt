@@ -117,10 +117,15 @@ asio::awaitable<void> test_zero_initial_count() {
 
 // ============ 测试 4：多个等待者 ============
 asio::awaitable<void> test_multiple_waiters() {
+    fprintf(stderr, "[DEBUG] test_multiple_waiters() entered\n"); fflush(stderr);
     std::cout << "\n=== Test 4: Multiple waiters ===\n";
+    std::cout.flush();
     
+    fprintf(stderr, "[DEBUG] Getting executor\n"); fflush(stderr);
     auto ex = co_await asio::this_coro::executor;
+    fprintf(stderr, "[DEBUG] Creating latch\n"); fflush(stderr);
     auto latch = std::make_shared<acore::async_latch>(ex, 3);
+    fprintf(stderr, "[DEBUG] Latch created, count=%ld\n", latch->count()); fflush(stderr);
     
     auto completed_count = std::make_shared<std::atomic<int>>(0);
     
@@ -377,10 +382,17 @@ asio::awaitable<void> test_stress() {
 
 // ============ 主测试函数 ============
 asio::awaitable<void> run_all_tests() {
+    fprintf(stderr, "[DEBUG] run_all_tests() started\n"); fflush(stderr);
     try {
+        fprintf(stderr, "[DEBUG] About to run test_basic_countdown\n"); fflush(stderr);
         co_await test_basic_countdown();
+        fprintf(stderr, "[DEBUG] test_basic_countdown completed\n"); fflush(stderr);
+        fprintf(stderr, "[DEBUG] About to run test_batch_countdown\n"); fflush(stderr);
         co_await test_batch_countdown();
+        fprintf(stderr, "[DEBUG] test_batch_countdown completed\n"); fflush(stderr);
+        fprintf(stderr, "[DEBUG] About to run test_zero_initial_count\n"); fflush(stderr);
         co_await test_zero_initial_count();
+        fprintf(stderr, "[DEBUG] test_zero_initial_count completed\n"); fflush(stderr);
         co_await test_multiple_waiters();
         co_await test_arrive_and_wait();
         co_await test_try_wait();
