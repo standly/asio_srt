@@ -225,24 +225,15 @@ public:
      * 
      * 当一个参与者永久离开时使用
      * 
-     * 注意：这会改变屏障的参与者数量，可能导致当前轮次的屏障提前触发
+     * 语义：减少期望的参与者数量，然后检查是否触发屏障
+     * 注意：调用者自己不算作"到达"（因为它离开了）
      */
     void arrive_and_drop() {
         asio::post(strand_, [self = shared_from_this()]() {
-            // 关键：必须先减少参与者数，再增加到达数
-            // 否则会过早触发屏障
-            // 
-            // 例如：num_participants=3, arrived_count=1
-            // 如果先++arrived_count（变成2），再--num_participants（变成2），
-            // 则 arrived_count >= num_participants 为true，错误触发
-            //
-            // 正确做法：先--num_participants（变成2），再++arrived_count（变成2），
-            // 但这时还没有第3个人到达，不应该触发
-            //
-            // 更正确的做法：同时减少两者，效果相当于只减少 num_participants
+            // 减少参与者数量
             self->num_participants_--;
-            self->arrived_count_++;
             
+            // 检查是否触发屏障（已到达数 >= 需要的人数）
             if (self->arrived_count_ >= self->num_participants_) {
                 // 所有参与者都到达了，唤醒所有等待者
                 while (!self->waiters_.empty()) {

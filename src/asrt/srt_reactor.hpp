@@ -132,5 +132,9 @@ private:
 
     // The map now holds EventOperations
     std::unordered_map<SRTSOCKET, std::unique_ptr<EventOperation>> pending_ops_;
+    
+    // ✅ Atomic counter for pending operations (for performance optimization)
+    // Tracks the number of sockets in pending_ops_ to avoid expensive checks in poll_loop
+    std::atomic<size_t> pending_ops_count_{0};
 };
 }

@@ -232,6 +232,9 @@ void SrtReactor::async_add_op(SRTSOCKET srt_sock, int event_type, Handler&& hand
             }
             ASRT_LOG_DEBUG("Socket {} added to epoll (events=0x{:x})", srt_sock, srt_events);
             pending_ops_[srt_sock] = std::move(op);
+            
+            // ✅ Increment counter (release ensures previous writes are visible)
+            pending_ops_count_.fetch_add(1, std::memory_order_release);
         } else {
             // Socket found, update existing operation and modify epoll
             auto& op = it->second;
@@ -259,21 +262,12 @@ void SrtReactor::poll_loop() {
     std::vector<SRT_EPOLL_EVENT> events(100);
 
     while (running_) {
-        // Check if there are any pending operations using dispatch for synchronous execution
-        // 如果没有 pending_ops 那么说明没有绑定要操作的socket到epoll，直接跳过
-        std::atomic<bool> has_pending{false};
-        std::promise<void> check_done;
-        auto check_future = check_done.get_future();
+        // ✅ Use atomic counter for performance (no dynamic allocation, no blocking)
+        // acquire ensures we see all previous writes to pending_ops_
+        size_t pending_count = pending_ops_count_.load(std::memory_order_acquire);
         
-        asio::post(op_strand_, [this, &has_pending, &check_done]() {
-            has_pending = !pending_ops_.empty();
-            check_done.set_value();
-        });
-        
-        check_future.wait();
-        
-        if (!has_pending) {
-            // Sleep briefly to avoid busy waiting
+        if (pending_count == 0) {
+            // No pending operations, sleep briefly to avoid busy waiting
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
@@ -347,6 +341,9 @@ void SrtReactor::poll_loop() {
                     srt_epoll_remove_usock(srt_epoll_id_, sock);
                     pending_ops_.erase(it);
                     
+                    // ✅ Decrement counter when removing socket due to error
+                    this->pending_ops_count_.fetch_sub(1, std::memory_order_release);
+                    
                     ASRT_LOG_DEBUG("Socket {} removed from epoll after error", sock);
                     
                     // 在 strand 外异步通知所有 handler
@@ -400,6 +397,9 @@ void SrtReactor::poll_loop() {
                 if (op->is_empty()) {
                     srt_epoll_remove_usock(srt_epoll_id_, sock);
                     pending_ops_.erase(it);
+                    
+                    // ✅ Decrement counter when removing socket
+                    this->pending_ops_count_.fetch_sub(1, std::memory_order_release);
                 } else {
                     int srt_events = op->events;
                     srt_epoll_update_usock(srt_epoll_id_, sock, &srt_events);
@@ -445,6 +445,9 @@ void SrtReactor::cleanup_op(SRTSOCKET srt_sock, int event_type, const std::error
     if (op->is_empty()) {
         srt_epoll_remove_usock(srt_epoll_id_, srt_sock);
         pending_ops_.erase(it);
+        
+        // ✅ Decrement counter (release ensures previous writes are visible)
+        pending_ops_count_.fetch_sub(1, std::memory_order_release);
     } else {
         int srt_events = op->events;
         srt_epoll_update_usock(srt_epoll_id_, srt_sock, &srt_events);
