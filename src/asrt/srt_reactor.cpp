@@ -17,8 +17,7 @@ namespace asrt {
 SrtReactor::SrtReactor(asio::io_context& io_context)
     : io_context_(io_context),
       reactor_strand_(asio::make_strand(io_context_)),
-      srt_epoll_id_(SRT_ERROR),
-      last_tick_time_(std::chrono::steady_clock::now()) {
+      srt_epoll_id_(SRT_ERROR) {
     
     initialize();
 }
@@ -148,17 +147,24 @@ asio::awaitable<int> SrtReactor::async_wait_writable(SRTSOCKET srt_sock, std::ch
 void SrtReactor::poll_loop() {
     // 使用 srt_epoll_uwait 可以获取每个 socket 的精确事件标志
     std::vector<SRT_EPOLL_EVENT> events(100);
+    
+    // ✅ Poll 超时时间（建议与时间轮 tick 间隔一致以获得最佳性能）
+    // 但即使提前返回也没问题，TimingWheel 内部会自动检查时间
+    constexpr int POLL_TIMEOUT_MS = 100;
 
     while (running_) {
-        // ✅ 阻塞式轮询（100ms 超时，低 CPU 占用）
-        int n = srt_epoll_uwait(srt_epoll_id_, events.data(), events.size(), 100);
+        // ✅ 阻塞式轮询（可能因事件提前返回）
+        int n = srt_epoll_uwait(srt_epoll_id_, events.data(), events.size(), POLL_TIMEOUT_MS);
 
         // ========================================
-        // 1. 先处理 epoll 触发的事件（优先级最高）
+        // 批量投递所有处理到 strand（事件 + 超时）
         // ========================================
-        if (n > 0) {
-            // ✅ 批量投递到 strand（减少 post 次数）
-            asio::post(reactor_strand_, [this, events_copy = std::vector<SRT_EPOLL_EVENT>(events.begin(), events.begin() + n)]() {
+        asio::post(reactor_strand_, [this, 
+            events_copy = (n > 0 ? std::vector<SRT_EPOLL_EVENT>(events.begin(), events.begin() + n) 
+                                 : std::vector<SRT_EPOLL_EVENT>())
+        ]() {
+            // 1. 先处理 epoll 触发的事件（优先级最高）
+            if (!events_copy.empty()) {
                 // 在 strand 上批量处理所有事件
                 for (const auto& event : events_copy) {
                     SRTSOCKET sock = event.fd;
@@ -294,44 +300,24 @@ void SrtReactor::poll_loop() {
                         });
                     }
                 } // end for each event
-            });
-        }
-        
-        // ========================================
-        // 2. 处理超时（在 epoll 事件之后）
-        // ========================================
-        auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_tick_time_);
-        const std::chrono::milliseconds tick_interval(100);
-        
-        if (elapsed >= tick_interval) {
-            // ✅ 批量投递超时处理到 strand
-            asio::post(reactor_strand_, [this, now]() {
-                auto elapsed_on_strand = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now - last_tick_time_);
+            }
+            
+            // 2. 处理超时（每次 poll 循环都调用 tick）
+            // ✅ TimingWheel 内部会自动检查时间间隔，只有时间够了才真正 tick
+            // 即使 epoll 提前返回（如 50ms），tick() 也会返回空列表
+            auto expired_timer_ids = timing_wheel_.tick();
+            for (uint64_t timer_id : expired_timer_ids) {
+                SRTSOCKET sock = get_socket_from_timer_id(timer_id);
+                bool is_write = is_write_timer(timer_id);
+                int event_type = is_write ? SRT_EPOLL_OUT : SRT_EPOLL_IN;
                 
-                if (elapsed_on_strand >= std::chrono::milliseconds(100)) {
-                    int ticks_to_process = static_cast<int>(elapsed_on_strand.count() / 100);
-                    
-                    for (int i = 0; i < ticks_to_process; ++i) {
-                        auto expired_timer_ids = timing_wheel_.tick();
-                        for (uint64_t timer_id : expired_timer_ids) {
-                            SRTSOCKET sock = get_socket_from_timer_id(timer_id);
-                            bool is_write = is_write_timer(timer_id);
-                            int event_type = is_write ? SRT_EPOLL_OUT : SRT_EPOLL_IN;
-                            
-                            ASRT_LOG_DEBUG("Socket {} {} operation timed out", 
-                                         sock, is_write ? "write" : "read");
-                            
-                            // 直接调用（已经在 strand 上）
-                            cleanup_op(sock, event_type, std::make_error_code(std::errc::timed_out));
-                        }
-                    }
-                    
-                    last_tick_time_ += std::chrono::milliseconds(ticks_to_process * 100);
-                }
-            });
-        }
+                ASRT_LOG_DEBUG("Socket {} {} operation timed out", 
+                             sock, is_write ? "write" : "read");
+                
+                // 直接调用（已经在 strand 上）
+                cleanup_op(sock, event_type, std::make_error_code(std::errc::timed_out));
+            }
+        });
     }
 }
 

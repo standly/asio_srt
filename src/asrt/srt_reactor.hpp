@@ -151,8 +151,8 @@ private:
     // Timing wheel for managing timeouts efficiently
     // Key = (SRTSOCKET << 1) | event_flag, where event_flag: 0=READ, 1=WRITE
     // This allows separate timeouts for read and write operations
+    // ✅ Tick 间隔与 poll 间隔同步（100ms），简化逻辑
     TimingWheel<uint64_t> timing_wheel_;
-    std::chrono::steady_clock::time_point last_tick_time_;
     
     // Helper functions to encode/decode timer IDs
     static constexpr uint64_t make_timer_id(SRTSOCKET sock, bool is_write) {
