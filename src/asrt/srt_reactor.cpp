@@ -19,7 +19,8 @@ SrtReactor& SrtReactor::get_instance() {
 SrtReactor::SrtReactor()
     : work_guard_(asio::make_work_guard(io_context_)),
       op_strand_(asio::make_strand(io_context_)),
-      srt_epoll_id_(SRT_ERROR) {
+      srt_epoll_id_(SRT_ERROR),
+      last_tick_time_(std::chrono::steady_clock::now()) {
 
     // 初始化 SRT 和日志系统
     srt_startup();
@@ -107,155 +108,40 @@ asio::awaitable<int> SrtReactor::async_wait_writable(SRTSOCKET srt_sock) {
 
 // Timeout versions - 直接实现，不调用无超时版本
 asio::awaitable<int> SrtReactor::async_wait_readable(SRTSOCKET srt_sock, std::chrono::milliseconds timeout) {
-    // 创建共享的状态变量（需要在多个协程间共享）
-    auto timer = std::make_shared<asio::steady_timer>(io_context_);
-    auto timed_out = std::make_shared<std::atomic<bool>>(false);
-    auto cancel_signal = std::make_shared<asio::cancellation_signal>();
-    
-    timer->expires_after(timeout);
-    
-    // 启动定时器协程
-    asio::co_spawn(
-        io_context_,
-        [timer, cancel_signal, timed_out]() -> asio::awaitable<void> {
-            auto [ec] = co_await timer->async_wait(asio::as_tuple(asio::use_awaitable));
-            if (!ec) {
-                // 定时器正常到期（未被取消）= 超时
-                timed_out->store(true);
-                cancel_signal->emit(asio::cancellation_type::all);
-            }
-        },
-        asio::detached
-    );
-
-    // 直接等待 socket 操作（带取消支持）
     auto [ec, result] = co_await asio::async_initiate<void(std::error_code, int)>(
-        [this, srt_sock](auto&& handler) {
-            async_add_op(srt_sock, SRT_EPOLL_IN | SRT_EPOLL_ERR, 
+        [this, srt_sock, timeout](auto&& handler) {
+            async_add_op(srt_sock, SRT_EPOLL_IN | SRT_EPOLL_ERR, timeout, 
                        std::forward<decltype(handler)>(handler));
         },
-        asio::as_tuple(asio::bind_cancellation_slot(cancel_signal->slot(), asio::use_awaitable))
+        asio::as_tuple(asio::use_awaitable)
     );
     
-    // 取消定时器（如果还在运行）
-    timer->cancel();
-    
-    // 处理结果
     if (ec) {
-        if (ec == asio::error::operation_aborted && timed_out->load()) {
-            // 超时使用标准的 timed_out 错误
-            throw asio::system_error(std::make_error_code(std::errc::timed_out));
-        }
-        throw asio::system_error(ec); // 其他错误
+        throw asio::system_error(ec);
     }
     
-    co_return result; // 成功
+    co_return result;
 }
 
 asio::awaitable<int> SrtReactor::async_wait_writable(SRTSOCKET srt_sock, std::chrono::milliseconds timeout) {
-    // 创建共享的状态变量
-    auto timer = std::make_shared<asio::steady_timer>(io_context_);
-    auto timed_out = std::make_shared<std::atomic<bool>>(false);
-    auto cancel_signal = std::make_shared<asio::cancellation_signal>();
-    
-    timer->expires_after(timeout);
-    
-    // 启动定时器协程
-    asio::co_spawn(
-        io_context_,
-        [timer, cancel_signal, timed_out]() -> asio::awaitable<void> {
-            auto [ec] = co_await timer->async_wait(asio::as_tuple(asio::use_awaitable));
-            if (!ec) {
-                // 定时器正常到期（未被取消）= 超时
-                timed_out->store(true);
-                cancel_signal->emit(asio::cancellation_type::all);
-            }
-        },
-        asio::detached
-    );
-
-    // 直接等待 socket 操作（带取消支持）
     auto [ec, result] = co_await asio::async_initiate<void(std::error_code, int)>(
-        [this, srt_sock](auto&& handler) {
-            async_add_op(srt_sock, SRT_EPOLL_OUT | SRT_EPOLL_ERR, 
+        [this, srt_sock, timeout](auto&& handler) {
+            async_add_op(srt_sock, SRT_EPOLL_OUT | SRT_EPOLL_ERR, timeout, 
                        std::forward<decltype(handler)>(handler));
         },
-        asio::as_tuple(asio::bind_cancellation_slot(cancel_signal->slot(), asio::use_awaitable))
+        asio::as_tuple(asio::use_awaitable)
     );
     
-    // 取消定时器（如果还在运行）
-    timer->cancel();
-    
-    // 处理结果
     if (ec) {
-        if (ec == asio::error::operation_aborted && timed_out->load()) {
-            // 超时使用标准的 timed_out 错误
-            throw asio::system_error(std::make_error_code(std::errc::timed_out));
-        }
-        throw asio::system_error(ec); // 其他错误
+        throw asio::system_error(ec);
     }
     
-    co_return result; // 成功
+    co_return result;
 }
 
 // Private helper to manage adding operations
-template<typename Handler>
-void SrtReactor::async_add_op(SRTSOCKET srt_sock, int event_type, Handler&& handler) {
-    auto slot = asio::get_associated_cancellation_slot(handler);
-    if (slot.is_connected()) {
-        slot.assign([this, srt_sock, event_type](asio::cancellation_type type) {
-            if (type != asio::cancellation_type::none) {
-                // Post cancellation to the strand
-                asio::post(op_strand_, [this, srt_sock, event_type]() {
-                    cleanup_op(srt_sock, event_type, asio::error::operation_aborted);
-                });
-            }
-        });
-    }
+// TEMPLATE IMPLEMENTATIONS ARE NOW IN THE HEADER FILE (.hpp)
 
-    asio::post(op_strand_, [this, srt_sock, event_type, h = std::move(handler)]() mutable {
-        auto it = pending_ops_.find(srt_sock);
-        if (it == pending_ops_.end()) {
-            // Socket not found, create a new operation and add to epoll
-            auto op = std::make_unique<EventOperation>();
-            op->add_handler(event_type, std::move(h));
-
-            int srt_events = op->events;
-            if (srt_epoll_add_usock(srt_epoll_id_, srt_sock, &srt_events) != 0) {
-                const auto err_msg = std::string("Failed to add socket to epoll: ") + srt_getlasterror_str();
-                ASRT_LOG_ERROR("{}", err_msg);
-                auto ex = asio::get_associated_executor(h);
-                asio::post(ex, [h_moved = std::move(h)]() mutable {
-                    h_moved(asrt::make_error_code(asrt::srt_errc::epoll_add_failed), 0);
-                });
-                return;
-            }
-            ASRT_LOG_DEBUG("Socket {} added to epoll (events=0x{:x})", srt_sock, srt_events);
-            pending_ops_[srt_sock] = std::move(op);
-            
-            // ✅ Increment counter (release ensures previous writes are visible)
-            pending_ops_count_.fetch_add(1, std::memory_order_release);
-        } else {
-            // Socket found, update existing operation and modify epoll
-            auto& op = it->second;
-            op->add_handler(event_type, std::move(h));
-
-            int srt_events = op->events;
-            if (srt_epoll_update_usock(srt_epoll_id_, srt_sock, &srt_events) != 0) {
-                 const auto err_msg = std::string("Failed to update socket in epoll: ") + srt_getlasterror_str();
-                 ASRT_LOG_ERROR("{}", err_msg);
-                 auto ex = asio::get_associated_executor(h);
-                 asio::post(ex, [h_moved = std::move(h)]() mutable {
-                    h_moved(asrt::make_error_code(asrt::srt_errc::epoll_update_failed), 0);
-                });
-                // Since we failed, roll back the handler addition
-                op->clear_handler(event_type);
-                return;
-            }
-            ASRT_LOG_DEBUG("Socket {} updated in epoll (events=0x{:x})", srt_sock, srt_events);
-        }
-    });
-}
 
 void SrtReactor::poll_loop() {
     // 使用 srt_epoll_uwait 可以获取每个 socket 的精确事件标志
@@ -276,7 +162,10 @@ void SrtReactor::poll_loop() {
         // Timeout of 100ms
         int n = srt_epoll_uwait(srt_epoll_id_, events.data(), events.size(), 100);
 
-        if (n <= 0) continue;
+        // ========================================
+        // 1. 先处理 epoll 触发的事件（优先级最高）
+        // ========================================
+        if (n > 0) {
 
         // 处理每个触发的 socket 事件
         for (int i = 0; i < n; i++) {
@@ -341,6 +230,10 @@ void SrtReactor::poll_loop() {
                     srt_epoll_remove_usock(srt_epoll_id_, sock);
                     pending_ops_.erase(it);
                     
+                    // Remove from timing wheel (both read and write timers)
+                    timing_wheel_.remove(make_timer_id(sock, false)); // Read timer
+                    timing_wheel_.remove(make_timer_id(sock, true));  // Write timer
+                    
                     // ✅ Decrement counter when removing socket due to error
                     this->pending_ops_count_.fetch_sub(1, std::memory_order_release);
                     
@@ -377,6 +270,9 @@ void SrtReactor::poll_loop() {
                         ex
                     );
                     op->clear_handler(SRT_EPOLL_IN);
+                    
+                    // Remove read timeout
+                    timing_wheel_.remove(make_timer_id(sock, false));
                 }
                 
                 // 处理可写事件
@@ -391,12 +287,19 @@ void SrtReactor::poll_loop() {
                         ex
                     );
                     op->clear_handler(SRT_EPOLL_OUT);
+                    
+                    // Remove write timeout
+                    timing_wheel_.remove(make_timer_id(sock, true));
                 }
                 
                 // 更新或清理 epoll 状态
                 if (op->is_empty()) {
                     srt_epoll_remove_usock(srt_epoll_id_, sock);
                     pending_ops_.erase(it);
+                    
+                    // Remove any remaining timers (shouldn't be any if we cleaned up properly above)
+                    timing_wheel_.remove(make_timer_id(sock, false));
+                    timing_wheel_.remove(make_timer_id(sock, true));
                     
                     // ✅ Decrement counter when removing socket
                     this->pending_ops_count_.fetch_sub(1, std::memory_order_release);
@@ -412,6 +315,34 @@ void SrtReactor::poll_loop() {
                     });
                 }
             });
+        }
+        }
+        
+        // ========================================
+        // 2. 处理超时（在 epoll 事件之后）
+        // ========================================
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_tick_time_);
+        const std::chrono::milliseconds tick_interval(100); // Should match timing wheel's config and epoll wait
+        
+        if (elapsed >= tick_interval) {
+            int ticks_to_process = static_cast<int>(elapsed.count() / tick_interval.count());
+            for (int i = 0; i < ticks_to_process; ++i) {
+                auto expired_timer_ids = timing_wheel_.tick();
+                for (uint64_t timer_id : expired_timer_ids) {
+                    SRTSOCKET sock = get_socket_from_timer_id(timer_id);
+                    bool is_write = is_write_timer(timer_id);
+                    int event_type = is_write ? SRT_EPOLL_OUT : SRT_EPOLL_IN;
+                    
+                    ASRT_LOG_DEBUG("Socket {} {} operation timed out", sock, is_write ? "write" : "read");
+                    
+                    // Post timeout cleanup to the strand
+                    asio::post(op_strand_, [this, sock, event_type]() {
+                        cleanup_op(sock, event_type, std::make_error_code(std::errc::timed_out));
+                    });
+                }
+            }
+            last_tick_time_ += ticks_to_process * tick_interval;
         }
     }
 }
@@ -435,9 +366,15 @@ void SrtReactor::cleanup_op(SRTSOCKET srt_sock, int event_type, const std::error
     if ((event_type & SRT_EPOLL_IN) && op->read_handler) {
         handler_to_call = std::move(op->read_handler);
         op->clear_handler(SRT_EPOLL_IN);
+        
+        // Remove read timeout
+        timing_wheel_.remove(make_timer_id(srt_sock, false));
     } else if ((event_type & SRT_EPOLL_OUT) && op->write_handler) {
         handler_to_call = std::move(op->write_handler);
         op->clear_handler(SRT_EPOLL_OUT);
+        
+        // Remove write timeout
+        timing_wheel_.remove(make_timer_id(srt_sock, true));
     }
 
 
@@ -445,6 +382,10 @@ void SrtReactor::cleanup_op(SRTSOCKET srt_sock, int event_type, const std::error
     if (op->is_empty()) {
         srt_epoll_remove_usock(srt_epoll_id_, srt_sock);
         pending_ops_.erase(it);
+        
+        // Remove any remaining timers
+        timing_wheel_.remove(make_timer_id(srt_sock, false));
+        timing_wheel_.remove(make_timer_id(srt_sock, true));
         
         // ✅ Decrement counter (release ensures previous writes are visible)
         pending_ops_count_.fetch_sub(1, std::memory_order_release);

@@ -17,6 +17,9 @@
 #include <unordered_map>
 
 #include "srt_log.hpp"
+#include "srt_error.hpp"
+#include "timing_wheel.hpp" // Include the new timing wheel header
+
 namespace asrt {
 class SrtReactor {
 private:
@@ -70,9 +73,18 @@ private:
 
     void poll_loop();
 
-    // Helper to add an operation. This avoids duplicating code between async_wait_readable/writable.
+    // Core implementation for adding an operation, must be called on op_strand_
+    template<typename Handler>
+    void add_op_on_strand(SRTSOCKET srt_sock, int event_type, Handler&& handler);
+
+    // Public API to add an operation
     template<typename Handler>
     void async_add_op(SRTSOCKET srt_sock, int event_type, Handler&& handler);
+
+    // Public API to add an operation with a timeout
+    template<typename Handler>
+    void async_add_op(SRTSOCKET srt_sock, int event_type, std::chrono::milliseconds timeout, Handler&& handler);
+
 
     // Cleanup now needs to know which event to cancel
     void cleanup_op(SRTSOCKET srt_sock, int event_type, const std::error_code& ec);
@@ -136,5 +148,116 @@ private:
     // ✅ Atomic counter for pending operations (for performance optimization)
     // Tracks the number of sockets in pending_ops_ to avoid expensive checks in poll_loop
     std::atomic<size_t> pending_ops_count_{0};
+
+    // Timing wheel for managing timeouts efficiently
+    // Key = (SRTSOCKET << 1) | event_flag, where event_flag: 0=READ, 1=WRITE
+    // This allows separate timeouts for read and write operations
+    TimingWheel<uint64_t> timing_wheel_;
+    std::chrono::steady_clock::time_point last_tick_time_;
+    
+    // Helper functions to encode/decode timer IDs
+    static constexpr uint64_t make_timer_id(SRTSOCKET sock, bool is_write) {
+        return (static_cast<uint64_t>(sock) << 1) | (is_write ? 1 : 0);
+    }
+    static constexpr SRTSOCKET get_socket_from_timer_id(uint64_t timer_id) {
+        return static_cast<SRTSOCKET>(timer_id >> 1);
+    }
+    static constexpr bool is_write_timer(uint64_t timer_id) {
+        return (timer_id & 1) != 0;
+    }
 };
+
+
+//==============================================================================
+// Template Function Implementations
+//==============================================================================
+
+template<typename Handler>
+void SrtReactor::async_add_op(SRTSOCKET srt_sock, int event_type, Handler&& handler) {
+    asio::post(op_strand_, [this, srt_sock, event_type, h = std::move(handler)]() mutable {
+        add_op_on_strand(srt_sock, event_type, std::move(h));
+    });
 }
+
+template<typename Handler>
+void SrtReactor::async_add_op(SRTSOCKET srt_sock, int event_type, std::chrono::milliseconds timeout, Handler&& handler) {
+    asio::post(op_strand_, [this, srt_sock, event_type, timeout, h = std::move(handler)]() mutable {
+        // Add to the timing wheel with separate timers for read and write
+        if (event_type & SRT_EPOLL_IN) {
+            timing_wheel_.add(make_timer_id(srt_sock, false), timeout);
+        }
+        if (event_type & SRT_EPOLL_OUT) {
+            timing_wheel_.add(make_timer_id(srt_sock, true), timeout);
+        }
+        
+        // Add the operation to epoll
+        add_op_on_strand(srt_sock, event_type, std::move(h));
+    });
+}
+
+template<typename Handler>
+void SrtReactor::add_op_on_strand(SRTSOCKET srt_sock, int event_type, Handler&& handler) {
+    // This is the core logic, now guaranteed to run on the strand.
+    // Attach cancellation slot
+    auto slot = asio::get_associated_cancellation_slot(handler);
+    if (slot.is_connected()) {
+        slot.assign([this, srt_sock, event_type](asio::cancellation_type type) {
+            if (type != asio::cancellation_type::none) {
+                // Post cancellation to the strand (safe, as it might be called from any thread)
+                asio::post(op_strand_, [this, srt_sock, event_type]() {
+                    cleanup_op(srt_sock, event_type, asio::error::operation_aborted);
+                });
+            }
+        });
+    }
+
+    // Find or create the operation
+    auto it = pending_ops_.find(srt_sock);
+    if (it == pending_ops_.end()) {
+        // Socket not found, prepare a new operation.
+        auto op = std::make_unique<EventOperation>();
+        int srt_events = 0;
+        if (event_type & SRT_EPOLL_IN) srt_events |= SRT_EPOLL_IN;
+        if (event_type & SRT_EPOLL_OUT) srt_events |= SRT_EPOLL_OUT;
+
+        if (srt_epoll_add_usock(srt_epoll_id_, srt_sock, &srt_events) != 0) {
+            const auto err_msg = std::string("Failed to add socket to epoll: ") + srt_getlasterror_str();
+            ASRT_LOG_ERROR("{}", err_msg);
+            auto ex = asio::get_associated_executor(handler);
+            asio::post(ex, [h = std::move(handler)]() mutable {
+                h(asrt::make_error_code(asrt::srt_errc::epoll_add_failed), 0);
+            });
+            return;
+        }
+        
+        // Now that epoll succeeded, add the handler and store the operation.
+        op->add_handler(event_type, std::move(handler));
+        ASRT_LOG_DEBUG("Socket {} added to epoll (events=0x{:x})", srt_sock, srt_events);
+        pending_ops_[srt_sock] = std::move(op);
+        
+        pending_ops_count_.fetch_add(1, std::memory_order_release);
+    } else {
+        // Socket found, prepare to update it.
+        auto& op = it->second;
+        int srt_events = op->events;
+        if (event_type & SRT_EPOLL_IN) srt_events |= SRT_EPOLL_IN;
+        if (event_type & SRT_EPOLL_OUT) srt_events |= SRT_EPOLL_OUT;
+
+        if (srt_epoll_update_usock(srt_epoll_id_, srt_sock, &srt_events) != 0) {
+             const auto err_msg = std::string("Failed to update socket in epoll: ") + srt_getlasterror_str();
+             ASRT_LOG_ERROR("{}", err_msg);
+             auto ex = asio::get_associated_executor(handler);
+             asio::post(ex, [h = std::move(handler)]() mutable {
+                h(asrt::make_error_code(asrt::srt_errc::epoll_update_failed), 0);
+            });
+            return;
+        }
+        
+        // Now that epoll succeeded, add the handler.
+        op->add_handler(event_type, std::move(handler));
+        ASRT_LOG_DEBUG("Socket {} updated in epoll (events=0x{:x})", srt_sock, srt_events);
+    }
+}
+
+
+} // namespace asrt
