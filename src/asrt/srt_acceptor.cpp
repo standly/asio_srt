@@ -25,7 +25,7 @@ SrtAcceptor::SrtAcceptor(SrtReactor& reactor)
     srt_setsockopt(sock_, 0, SRTO_SNDSYN, &no, sizeof(no));
 }
 
-SrtAcceptor::SrtAcceptor(const std::map<std::string, std::string>& options, SrtReactor& reactor)
+SrtAcceptor::SrtAcceptor(SrtReactor& reactor, const std::map<std::string, std::string>& options)
     : reactor_(reactor), sock_(SRT_INVALID_SOCK), options_(options) {
     
     // 创建 SRT socket

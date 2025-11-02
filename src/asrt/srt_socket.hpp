@@ -26,12 +26,12 @@ class SrtSocket {
 public:
     using ConnectCallback = std::function<void(const std::error_code&, SrtSocket&)>;
     
-    // 构造函数
-    explicit SrtSocket(SrtReactor& reactor = SrtReactor::get_instance());
+    // ✅ 构造函数（必须提供 Reactor）
+    explicit SrtSocket(SrtReactor& reactor);
     
-    // 带选项的构造函数
-    SrtSocket(const std::map<std::string, std::string>& options,
-              SrtReactor& reactor = SrtReactor::get_instance());
+    // ✅ 带选项的构造函数
+    SrtSocket(SrtReactor& reactor,
+              const std::map<std::string, std::string>& options);
     
     // 移动语义
     SrtSocket(SrtSocket&& other) noexcept;

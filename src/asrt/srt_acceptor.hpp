@@ -22,12 +22,12 @@ class SrtAcceptor {
 public:
     using ListenerCallback = std::function<int(SrtSocket&, int hsversion, const std::string& streamid)>;
     
-    // 构造函数
-    explicit SrtAcceptor(SrtReactor& reactor = SrtReactor::get_instance());
+    // ✅ 构造函数（必须提供 Reactor）
+    explicit SrtAcceptor(SrtReactor& reactor);
     
-    // 带选项的构造函数
-    SrtAcceptor(const std::map<std::string, std::string>& options,
-                 SrtReactor& reactor = SrtReactor::get_instance());
+    // ✅ 带选项的构造函数
+    SrtAcceptor(SrtReactor& reactor,
+                const std::map<std::string, std::string>& options);
     
     // 移动语义
     SrtAcceptor(SrtAcceptor&& other) noexcept;

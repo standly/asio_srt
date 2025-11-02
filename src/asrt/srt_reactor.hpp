@@ -27,7 +27,10 @@ private:
     struct EventOperation;
 
 public:
-    static SrtReactor& get_instance();
+    // ✅ 接受用户的 io_context
+    explicit SrtReactor(asio::io_context& io_context);
+    
+    ~SrtReactor();
 
     SrtReactor(const SrtReactor&) = delete;
     SrtReactor& operator=(const SrtReactor&) = delete;
@@ -40,7 +43,8 @@ public:
     // Throws on other errors
     asio::awaitable<int> async_wait_readable(SRTSOCKET srt_sock, std::chrono::milliseconds timeout);
     asio::awaitable<int> async_wait_writable(SRTSOCKET srt_sock, std::chrono::milliseconds timeout);
-
+    
+    // ✅ 返回用户的 io_context（引用）
     asio::io_context& get_io_context() {
         return io_context_;
     }
@@ -68,9 +72,8 @@ public:
     }
 
 private:
-    SrtReactor();
-    ~SrtReactor();
-
+    void initialize();
+    void shutdown();
     void poll_loop();
 
     // Core implementation for adding an operation, must be called on op_strand_
@@ -132,22 +135,18 @@ private:
     };
 
 private:
-    asio::io_context io_context_;
-    asio::executor_work_guard<asio::io_context::executor_type> work_guard_;
-    asio::strand<asio::io_context::executor_type> op_strand_;
+    // ✅ 引用用户的 io_context（不拥有）
+    asio::io_context& io_context_;
+    asio::strand<asio::io_context::executor_type> reactor_strand_;
 
-    std::thread asio_thread_;
+    // ✅ 只需要一个轮询线程
     std::thread srt_poll_thread_;
 
     int srt_epoll_id_;
     std::atomic<bool> running_{false};
 
-    // The map now holds EventOperations
+    // ✅ 只在 reactor_strand_ 上访问，无需原子计数器
     std::unordered_map<SRTSOCKET, std::unique_ptr<EventOperation>> pending_ops_;
-    
-    // ✅ Atomic counter for pending operations (for performance optimization)
-    // Tracks the number of sockets in pending_ops_ to avoid expensive checks in poll_loop
-    std::atomic<size_t> pending_ops_count_{0};
 
     // Timing wheel for managing timeouts efficiently
     // Key = (SRTSOCKET << 1) | event_flag, where event_flag: 0=READ, 1=WRITE
@@ -174,14 +173,14 @@ private:
 
 template<typename Handler>
 void SrtReactor::async_add_op(SRTSOCKET srt_sock, int event_type, Handler&& handler) {
-    asio::post(op_strand_, [this, srt_sock, event_type, h = std::move(handler)]() mutable {
+    asio::post(reactor_strand_, [this, srt_sock, event_type, h = std::move(handler)]() mutable {
         add_op_on_strand(srt_sock, event_type, std::move(h));
     });
 }
 
 template<typename Handler>
 void SrtReactor::async_add_op(SRTSOCKET srt_sock, int event_type, std::chrono::milliseconds timeout, Handler&& handler) {
-    asio::post(op_strand_, [this, srt_sock, event_type, timeout, h = std::move(handler)]() mutable {
+    asio::post(reactor_strand_, [this, srt_sock, event_type, timeout, h = std::move(handler)]() mutable {
         // Add to the timing wheel with separate timers for read and write
         if (event_type & SRT_EPOLL_IN) {
             timing_wheel_.add(make_timer_id(srt_sock, false), timeout);
@@ -204,7 +203,7 @@ void SrtReactor::add_op_on_strand(SRTSOCKET srt_sock, int event_type, Handler&& 
         slot.assign([this, srt_sock, event_type](asio::cancellation_type type) {
             if (type != asio::cancellation_type::none) {
                 // Post cancellation to the strand (safe, as it might be called from any thread)
-                asio::post(op_strand_, [this, srt_sock, event_type]() {
+                asio::post(reactor_strand_, [this, srt_sock, event_type]() {
                     cleanup_op(srt_sock, event_type, asio::error::operation_aborted);
                 });
             }
@@ -234,8 +233,6 @@ void SrtReactor::add_op_on_strand(SRTSOCKET srt_sock, int event_type, Handler&& 
         op->add_handler(event_type, std::move(handler));
         ASRT_LOG_DEBUG("Socket {} added to epoll (events=0x{:x})", srt_sock, srt_events);
         pending_ops_[srt_sock] = std::move(op);
-        
-        pending_ops_count_.fetch_add(1, std::memory_order_release);
     } else {
         // Socket found, prepare to update it.
         auto& op = it->second;
